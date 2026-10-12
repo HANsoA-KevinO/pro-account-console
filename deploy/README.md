@@ -52,6 +52,8 @@ Compose 使用 Linux host 网络，网关监听服务器回环地址，Codex 授
 - `ssl_certificate`、`ssl_certificate_key` 为有效证书的实际路径。
 - `proxy_pass` 端口为实际网关端口，默认 `http://127.0.0.1:8787`。
 
+若使用 HTTPS 非默认端口（例如 `https://gateway.example.com:8443`），同步调整 Nginx 的监听端口，`server_name` 仍填写域名，`proxy_set_header Host` 填写完整的 `gateway.example.com:8443`，防火墙放行相同公网端口。
+
 模板用于同一服务器上的 Nginx。将配置纳入现有站点配置，校验后加载：
 
 ```sh

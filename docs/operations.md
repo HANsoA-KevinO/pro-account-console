@@ -84,4 +84,3 @@ SQLite 账本保存经本网关的请求，支持时间、账号、key、模型�
 如果上游没有 Content-Type，但内容是有效 SSE，仍能解析；若完成快照 output 为空，会使用同一响应的 `output_item.done` 项拼装。只有收到完成事件才视为成功。
 
 不提供 Chat Completions/Anthropic Messages 转换、HTTP `previous_response_id` 存储或图像生成。函数工具还需遵循官方套餐接口的 namespace/additional_tools 要求；事件转发有模拟测试覆盖，真实工具闭环需按具体 agent 验证。
-
