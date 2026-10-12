@@ -42,7 +42,7 @@ curl --fail https://pro-account-console.YOUR_SUBDOMAIN.workers.dev/healthz
 ```
 
 `ok:true` 表示网关就绪。初始部署没有已授权的 OpenAI 账号，`connected:false` 属于正常状态。
-管理员用户名和密码保存在本机 `.data/cloudflare/admin.json`，以 0600 权限创建。打开公网首页，输入这份独立凭据。
+管理员用户名和密码保存在本机 `.data/cloudflare/admin.json`，以 0600 权限创建。打开公网首页会进入独立登录页，输入这份凭据。登录会话有效期 24 小时，可在后台侧栏退出；原有用户名和密码无需修改。
 
 后台与 Responses 接口共享域名：
 
@@ -56,7 +56,17 @@ API Key：管理后台创建的接入 Key
 
 ## 首次 OpenAI 授权
 
-模型授权和独立 Codex 额度授权仍使用 HTTP 回环回调。通过 Cloudflare 的 Wrangler SSH 通道把本机端口转发到运行中的容器。
+默认可直接从公网后台授权，无需本机转发：
+
+1. 添加账号并点击“登录授权”。在官方页面完成登录后，复制最后地址栏里的完整 `http://127.0.0.1:<port>/auth/callback?...` 地址，粘贴回云端后台。回环页面可能无法连接，这不会删除地址栏中的授权参数。
+2. 这是网关提供的手动回调传递方式；上游仍使用原回环 `redirect_uri`。授权绑定发起它的管理员会话和账号，校验 state、PKCE、nonce、身份签名及期限；授权参数不写入审计日志。待完成的事务在内存中，服务更新或重启后需要重新发起。
+3. 同一账号“连接额度读取”使用 Codex 官方设备码登录，显示授权网址和一次性代码。先在 ChatGPT 的安全设置中启用设备码登录；完成后自动核对邮箱与工作区并同步额度。
+
+这两种授权使用不同的令牌；Codex 设备码不会被当作 SIWC 模型调用令牌。模型授权目前无法直接使用公网自动回调，见 [官方注册与登录](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)。设备码协议见 [Codex app-server](https://learn.chatgpt.com/docs/app-server)。
+
+### 可选：通过本机转发自动接收回调
+
+原浏览器回调仍可通过 Cloudflare 的 Wrangler SSH 通道完成。
 先访问公网 `/healthz` 使容器启动，再查看容器实例：
 
 ```sh

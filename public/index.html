@@ -12,7 +12,7 @@
     <button data-page="quality"><span>04</span>模型指纹</button>
     <button data-page="alerts"><span>05</span>提醒与审计<b id="alert-count">0</b></button>
   </nav>
-  <div class="sidebar-foot"><span class="status-dot"></span>仅本机管理<small>127.0.0.1:8787</small><p>所有 key 共用账号池<br>已启用账号统一轮询</p></div>
+  <div class="sidebar-foot"><span class="status-dot"></span><span id="admin-identity">管理控制台</span><small id="admin-host"></small><p>所有 key 共用账号池<br>已启用账号统一轮询</p><button id="admin-logout" class="quiet" hidden>退出登录 ↗</button></div>
 </aside>
 <main>
   <header><span class="eyebrow">GLOBAL ACCOUNT POOL</span><div class="header-actions"><span id="pool-status" class="badge">正在读取账号池</span><button id="refresh">刷新全部状态</button></div></header>

@@ -13,12 +13,14 @@ import {HttpSessions} from "./lib/upstream-http-session.mjs";
 import {Quality,collectedResponse} from "./lib/quality.mjs";
 import {QuotaSync} from "./lib/quota.mjs";
 import {Fingerprints,loadFingerprintLibrary} from "./lib/fingerprint.mjs";
-import {isPrivateIPv4,discoverLanAddress,loadLanAuth,readLanAuth,validateLanAuth,acceptsBasicAuth} from "./lib/network.mjs";
+import {isPrivateIPv4,discoverLanAddress,loadLanAuth,readLanAuth,validateLanAuth} from "./lib/network.mjs";
 import {runtimeConfig,publicOrigin} from "./lib/runtime.mjs";
 import {keepStreamAlive} from "./lib/sse-keepalive.mjs";
 
 const root=path.dirname(fileURLToPath(import.meta.url));
 const contentTypes={"/app.js":"text/javascript","/style.css":"text/css"};
+const loginAssets={"/login.js":"text/javascript","/login.css":"text/css"};
+const pagePolicy="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
 const cookies=req=>Object.fromEntries((req.headers.cookie||"").split(";").map(part=>part.trim().split("=")).filter(pair=>pair.length===2));
 async function readBody(req) {
   let size=0;const chunks=[];
@@ -48,7 +50,10 @@ export async function createGateway({port=8787,directory=path.join(root,".data")
   const store=await new Store(directory,{databaseFactory}).init();
   const quota=new QuotaSync(store,{clientFactory:quotaClientFactory});
   const fingerprintLibrary=await loadFingerprintLibrary();
-  const oauths=new Map(),catalogs=new Map();
+  const oauths=new Map(),catalogs=new Map(),loginAttempts=new Map();
+  const adminCookie=(id,requestOrigin,maxAge=86400)=>adminCookieName+"="+id+"; HttpOnly; SameSite=Lax; Path=/; Max-Age="+maxAge+(requestOrigin.startsWith("https:")?"; Secure":"");
+  const newAdminSession=(requestOrigin,authFingerprint)=>({id:randomBytes(32).toString("base64url"),csrf:randomBytes(32).toString("base64url"),expiresAt:Date.now()+86400000,origin:requestOrigin,authFingerprint});
+  const redirect=(res,location)=>{res.writeHead(303,{location,"cache-control":"no-store"});res.end();};
   let origin,lanOrigin=null,lanServer=null,quality,fingerprints,timer;
   const getOAuth=id=>{
     store.getAccount(id);
@@ -122,32 +127,59 @@ export async function createGateway({port=8787,directory=path.join(root,".data")
       const requestOrigin=publicHost?publicUrl:localHost?origin:lanOrigin;
       const url=new URL(req.url,requestOrigin),segments=url.pathname.split("/").filter(Boolean),query=Object.fromEntries(url.searchParams);
       const existingAdminSession=store.adminSession(cookies(req)[adminCookieName]);
-      let authFingerprint=null,validLanSession=false;
+      let authFingerprint=null,validLanSession=false,currentAuth;
       if(req.headers.origin&&req.headers.origin!==requestOrigin)throw new PublicError(403,"invalid_origin","拒绝跨站请求。");
-      if(req.headers["sec-fetch-site"]==="cross-site"&&!["/","/auth/callback"].includes(url.pathname))throw new PublicError(403,"cross_site_request","拒绝跨站请求。");
+      if(req.headers["sec-fetch-site"]==="cross-site"&&!["/","/login","/auth/callback"].includes(url.pathname))throw new PublicError(403,"cross_site_request","拒绝跨站请求。");
       if(req.method==="GET"&&url.pathname==="/healthz")return json(res,200,{ok:true,mode:requireAdmin?"self-hosted":"central-routing-local",connected:store.candidateAccounts(store.management.routes.find(rule=>rule.id==="route-default")).some(id=>store.getAccount(id).enabled&&eligible(id))});
+      if(req.method==="GET"&&Object.hasOwn(loginAssets,url.pathname)){
+        res.writeHead(200,{"content-type":loginAssets[url.pathname],"cache-control":"no-store"});return res.end(await readFile(path.join(root,"public",url.pathname.slice(1))));
+      }
       const protectedAdmin=lanHost||requireAdmin;
       if(protectedAdmin&&!url.pathname.startsWith("/v1/")){
-        let currentAuth;
         try{currentAuth=adminAuthLoader?validateLanAuth(await adminAuthLoader()):adminAuth;}
         catch{throw new PublicError(503,"lan_admin_config_invalid","管理员凭据文件无效，请在运行环境修复 lan-admin.json 的用户名和密码。");}
         authFingerprint=createHash("sha256").update(JSON.stringify([currentAuth.username,currentAuth.password])).digest("hex");
         validLanSession=existingAdminSession?.origin===requestOrigin&&existingAdminSession.authFingerprint===authFingerprint;
-        if(!validLanSession&&!acceptsBasicAuth(req.headers.authorization,currentAuth)){
-          if(req.method==="GET"&&url.pathname==="/"){
-            res.setHeader("www-authenticate",'Basic realm="Pro Account Console", charset="UTF-8"');
-            return json(res,401,{error:{code:"lan_admin_required",message:"内网管理需要管理员用户名和密码。"}});
-          }
-          throw new PublicError(403,"lan_admin_required","管理登录状态已失效，请重新打开管理页面登录。");
-        }
       }
-      if((lanHost||publicHost)&&(url.pathname==="/auth/callback"||(req.method==="POST"&&(url.pathname==="/api/login"||/^\/api\/accounts\/[^/]+\/(?:quota\/)?login$/.test(url.pathname)))))throw new PublicError(403,"local_login_required","账号授权请在运行网关的电脑上打开 "+origin+" 完成；服务器部署请先建立 SSH 端口转发，再使用此回环地址授权。");
+      if(req.method==="GET"&&url.pathname==="/login"){
+        if(!protectedAdmin||validLanSession)return redirect(res,"/");
+        res.setHeader("content-security-policy",pagePolicy);
+        res.writeHead(200,{"content-type":"text/html; charset=utf-8","cache-control":"no-store"});
+        return res.end(await readFile(path.join(root,"public/login.html"),"utf8"));
+      }
+      if(req.method==="POST"&&url.pathname==="/auth/admin/login"){
+        if(!protectedAdmin)throw new PublicError(400,"admin_login_unnecessary","此本机入口无需管理员登录。");
+        if(req.headers.origin!==requestOrigin||!/^application\/json(?:\s*;|$)/i.test(req.headers["content-type"]||""))throw new PublicError(403,"invalid_origin","请从本站登录页面提交。");
+        // Limit password attempts per origin and connection address. Entries
+        // expire after one minute and never contain usernames or passwords.
+        const now=Date.now(),key=requestOrigin+"|"+req.socket.remoteAddress;
+        for(const [id,attempt]of loginAttempts)if(attempt.resetAt<=now)loginAttempts.delete(id);
+        let attempt=loginAttempts.get(key);
+        if(!attempt){if(loginAttempts.size>=1024)throw new PublicError(429,"login_rate_limited","登录尝试过多，请稍后重试。");attempt={count:0,resetAt:now+60000};loginAttempts.set(key,attempt);}
+        if(attempt.count>=10){res.setHeader("retry-after",String(Math.ceil((attempt.resetAt-now)/1000)));throw new PublicError(429,"login_rate_limited","登录尝试过多，请稍等一分钟后重试。");}
+        attempt.count++;
+        const fields=await readBody(req);
+        const userMatches=typeof fields?.username==="string"&&fields.username.length<=64&&safeEqual(fields.username,currentAuth.username);
+        const passwordMatches=typeof fields?.password==="string"&&fields.password.length<=1024&&safeEqual(fields.password,currentAuth.password);
+        if(!userMatches||!passwordMatches)throw new PublicError(401,"invalid_credentials","用户名或密码不正确，请重新输入。");
+        loginAttempts.delete(key);
+        if(existingAdminSession?.origin===requestOrigin)store.deleteAdminSession(existingAdminSession.id);
+        const session=newAdminSession(requestOrigin,authFingerprint);store.saveAdminSession(session);
+        res.setHeader("set-cookie",adminCookie(session.id,requestOrigin));
+        store.audit("administrator_signed_in",{username:currentAuth.username});
+        return json(res,200,{ok:true,redirect:"/"});
+      }
+      if(protectedAdmin&&!url.pathname.startsWith("/v1/")&&!validLanSession){
+        if(req.method==="GET"&&url.pathname==="/")return redirect(res,"/login");
+        throw new PublicError(403,"lan_admin_required","管理登录已过期，请重新登录。");
+      }
+      if((lanHost||publicHost)&&url.pathname==="/auth/callback")throw new PublicError(403,"local_login_required","请在账号授权窗口粘贴完整回调地址以完成云端授权。");
       if(req.method==="GET"&&url.pathname==="/"){
         const existing=existingAdminSession;
-        const session=existing&&existing.origin===requestOrigin&&(!protectedAdmin||validLanSession)?existing:{id:randomBytes(32).toString("base64url"),csrf:randomBytes(32).toString("base64url"),expiresAt:Date.now()+86400000,origin:requestOrigin,authFingerprint};
+        const session=existing&&existing.origin===requestOrigin&&(!protectedAdmin||validLanSession)?existing:newAdminSession(requestOrigin,authFingerprint);
         store.saveAdminSession(session);
-        res.setHeader("set-cookie",adminCookieName+"="+session.id+"; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400"+(requestOrigin.startsWith("https:")?"; Secure":""));
-        res.setHeader("content-security-policy","default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+        res.setHeader("set-cookie",adminCookie(session.id,requestOrigin,Math.max(0,Math.floor((session.expiresAt-Date.now())/1000))));
+        res.setHeader("content-security-policy",pagePolicy);
         res.writeHead(200,{"content-type":"text/html; charset=utf-8","cache-control":"no-store"});
         return res.end((await readFile(path.join(root,"public/index.html"),"utf8")).replace("__CSRF__",session.csrf));
       }
@@ -169,6 +201,7 @@ export async function createGateway({port=8787,directory=path.join(root,".data")
           auth:store.management.activeAccountId?getOAuth(store.management.activeAccountId).status():{connected:false,sharing:false,email:null},usage:store.summary(),baseUrl:requestOrigin+"/v1",lanBaseUrl:lanOrigin?lanOrigin+"/v1":null,
           activeAccountId:store.management.activeAccountId,accounts:accountStatuses(),agents:store.publicAgents().map(agent=>({...agent,usage:{...agent.usage,queued:admissions.waitingForAgent(agent.id)}})),routes:routeStatuses(),queue:admissions.status(),
           publicBaseUrl:publicUrl?publicUrl+"/v1":null,
+          administrator:{loginRequired:!!protectedAdmin,username:currentAuth?.username||null},
           deletedAccounts:store.management.deletedAccounts||[],
           upstreamSessions:webSocketPool?.status()||httpSessions.status(),
           fingerprintLibrary:fingerprintLibrary.info,
@@ -183,6 +216,10 @@ export async function createGateway({port=8787,directory=path.join(root,".data")
         if(req.method==="GET"&&url.pathname==="/api/fingerprint")return json(res,200,fingerprints.history(query));
         if(req.method==="GET"&&segments[1]==="fingerprint"&&segments[2])return json(res,200,fingerprints.get(segments[2]));
         if(req.method==="POST"){
+          if(url.pathname==="/api/admin/logout"){
+            store.deleteAdminSession(session.id);res.setHeader("set-cookie",adminCookie("",requestOrigin,0));
+            store.audit("administrator_signed_out",{});return json(res,200,{ok:true});
+          }
           if(url.pathname==="/api/quota/sync")return json(res,200,await quota.syncAll());
           if(url.pathname==="/api/accounts")return json(res,201,await store.addAccount((await readBody(req)).name));
           if(url.pathname==="/api/keys")return json(res,201,await store.addAgent(await readBody(req)));
@@ -219,7 +256,7 @@ export async function createGateway({port=8787,directory=path.join(root,".data")
             }
             if(segments[3]==="quota"){
               if(segments[4]==="sync")return json(res,200,await quota.sync(id,{force:true}));
-              if(segments[4]==="login")return json(res,200,await quota.startLogin(id));
+              if(segments[4]==="login")return json(res,200,await quota.startLogin(id,{deviceCode:!!(lanHost||publicHost)}));
               if(segments[4]==="cancel")return json(res,200,await quota.cancelLogin(id));
               if(segments[4]==="logout")return json(res,200,await quota.disconnect(id));
             }
@@ -227,9 +264,16 @@ export async function createGateway({port=8787,directory=path.join(root,".data")
             if(segments[3]==="select"){await store.selectAccount(id);return json(res,200,{ok:true});}
             if(segments[3]==="login"){
               if(!store.getAccount(id).enabled)throw new PublicError(403,"account_disabled","请先启用该账号。");
-              const login=await getOAuth(id).start();
-              res.setHeader("set-cookie",loginCookieName+"="+login.browser+"; HttpOnly; SameSite=Lax; Path=/auth/callback; Max-Age=600");
-              return json(res,200,{authorizationUrl:login.url});
+              const remote=!!(lanHost||publicHost),oauth=getOAuth(id),login=await oauth.start(remote?{browser:session.csrf}:{});
+              if(!remote)res.setHeader("set-cookie",loginCookieName+"="+login.browser+"; HttpOnly; SameSite=Lax; Path=/auth/callback; Max-Age=600");
+              return json(res,200,{authorizationUrl:login.url,completionMode:remote?"manual_callback":"browser_callback",callbackUrl:oauth.redirectUri||origin+"/auth/callback"});
+            }
+            if(segments[3]==="complete-login"){
+              store.assertAccountAvailable(id);
+              const fields=await readBody(req),oauth=getOAuth(id);
+              await oauth.completeRemote(fields.callbackUrl,session.csrf);
+              store.audit("account_authorized",{accountId:id,sharing:oauth.status().sharing,method:"manual_callback"});
+              return json(res,200,{ok:true});
             }
             if(segments[3]==="logout"){const result=await getOAuth(id).logout();store.audit("account_disconnected",{accountId:id});return json(res,200,result);}
           }
@@ -238,7 +282,11 @@ export async function createGateway({port=8787,directory=path.join(root,".data")
             if(segments.length===3)return json(res,200,await store.updateAgent(segments[2],await readBody(req)));
           }
           if(segments[1]==="alerts"&&segments[2]){store.acknowledge(segments[2]);return json(res,200,{ok:true});}
-          if(url.pathname==="/api/login"){store.assertAccountAvailable(store.management.activeAccountId);const login=await getOAuth(store.management.activeAccountId).start();res.setHeader("set-cookie",loginCookieName+"="+login.browser+"; HttpOnly; SameSite=Lax; Path=/auth/callback; Max-Age=600");return json(res,200,{authorizationUrl:login.url});}
+          if(url.pathname==="/api/login"){
+            store.assertAccountAvailable(store.management.activeAccountId);const remote=!!(lanHost||publicHost),oauth=getOAuth(store.management.activeAccountId),login=await oauth.start(remote?{browser:session.csrf}:{});
+            if(!remote)res.setHeader("set-cookie",loginCookieName+"="+login.browser+"; HttpOnly; SameSite=Lax; Path=/auth/callback; Max-Age=600");
+            return json(res,200,{authorizationUrl:login.url,completionMode:remote?"manual_callback":"browser_callback",callbackUrl:oauth.redirectUri||origin+"/auth/callback"});
+          }
           if(url.pathname==="/api/logout")return json(res,200,await getOAuth(store.management.activeAccountId).logout());
         }
       }
@@ -260,8 +308,7 @@ export async function createGateway({port=8787,directory=path.join(root,".data")
       throw new PublicError(404,"not_found","当前版本没有提供该接口。");
     }catch(error){
       const status=error instanceof PublicError?error.status:500;
-      // A Basic-auth browser can re-prompt on an API 401 even when the password
-      // is correct. Only the initial document navigation issues that challenge.
+      // Keep upstream authorization errors distinct from administrator login.
       const adminApi401=status===401&&(requireAdmin||(lanOrigin&&req.headers.host===new URL(lanOrigin).host))&&req.url.startsWith("/api/");
       if(!res.headersSent&&!res.destroyed)json(res,adminApi401?403:status,{error:{code:error instanceof PublicError?error.code:"internal_error",message:error instanceof PublicError?error.message:"操作失败，请稍后重试。"}});
       else if(!res.destroyed){

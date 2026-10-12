@@ -24,7 +24,7 @@ async function fixture(t){
         calls.push({id,method,params});
         if(method==="account/read")return {account:{type:"chatgpt",email:this.identity,planType:"pro"},workspaceRouting:{chatgptAccountId:this.workspace}};
         if(method==="account/rateLimits/read"){if(this.fail)throw new Error("private-token-do-not-leak");return this.quota||reply(this.workspace,isFirst?20:80);}
-        if(method==="account/login/start")return {type:"chatgpt",loginId:"login-"+id,authUrl:"https://auth.openai.com/oauth/authorize?state=test"};
+        if(method==="account/login/start")return params.type==="chatgptDeviceCode"?{type:"chatgptDeviceCode",loginId:"login-"+id,verificationUrl:"https://auth.openai.com/codex/device",userCode:"ABCD-1234"}:{type:"chatgpt",loginId:"login-"+id,authUrl:"https://auth.openai.com/oauth/authorize?state=test"};
         return {};
       },
     };clients.set(id,client);return client;
@@ -154,4 +154,16 @@ test("admin sync endpoints require cookie+CSRF and expose no private bindings th
   const status=await (await fetch(g.origin+"/api/status",{headers:{cookie}})).json();
   assert.equal(status.accounts[0].quota.automatic.snapshot,null);
   assert.ok(!JSON.stringify(status).includes("binding"));
+});
+
+
+test("remote quota sign-in uses device codes, deduplicates requests and still verifies account identity",async t=>{
+  const f=await fixture(t),result=await f.quota.startLogin("account-default",{deviceCode:true});
+  assert.equal(result.mode,"device_code");assert.equal(result.authorizationUrl,"https://auth.openai.com/codex/device");assert.equal(result.userCode,"ABCD-1234");
+  assert.deepEqual(await f.quota.startLogin("account-default",{deviceCode:true}),result);
+  assert.equal(f.calls.filter(x=>x.method==="account/login/start").length,1);assert.equal(f.calls.find(x=>x.method==="account/login/start").params.type,"chatgptDeviceCode");
+  await writeJson(path.join(f.clients.get("account-default").home,"auth.json"),{});
+  await f.quota.notification("account-default",{method:"account/login/completed",params:{loginId:"login-account-default",success:true}});
+  assert.equal(f.quota.login,null);assert.equal(f.quota.status("account-default").connected,true);
+  assert.ok(!JSON.stringify(f.store.auditLog()).includes(result.userCode));
 });

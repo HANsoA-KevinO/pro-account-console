@@ -17,14 +17,14 @@
 
 使用 Workers + Containers + SQLite Durable Objects。Cloudflare 提供 HTTPS 后台与 Responses API，账号、Key、日志和会话绑定保存在 Durable Objects 中；容器休眠或重建后恢复运行配置。
 
-需要 Workers Paid、已授权的 Wrangler，以及构建镜像时运行的本机 Docker。先使用 `workers.dev` 地址，新部署由 CLI 创建。首次账号授权通过 Wrangler SSH 转发到云端容器，日常使用直接走公网。
+需要 Workers Paid、已授权的 Wrangler，以及构建镜像时运行的本机 Docker。先使用 `workers.dev` 地址，新部署由 CLI 创建。管理员使用独立登录页。账号可从公网后台发起授权并粘贴回调地址，额度读取使用官方设备码；日常使用直接走公网。
 
 配置、部署、管理员登录和授权步骤见 [Cloudflare 部署说明](deploy/cloudflare/README.md)。
 
 ## 部署到服务器并通过公网使用
 
 需要 Linux 服务器、Docker Engine/Compose，以及指向服务器的域名和 HTTPS 证书。
-当前版本为 `0.13.0`，镜像包含 Node.js 24 和用于额度读取的 Codex CLI 0.159.2。
+当前版本为 `0.14.0`，镜像包含 Node.js 24 和用于额度读取的 Codex CLI 0.159.2。
 
 ### 1. 获取源码并配置访问域名
 
@@ -61,25 +61,22 @@ docker compose ps
 docker compose exec gateway cat /var/lib/pro-account-console/lan-admin.json
 ```
 
-完成 HTTPS 配置后，管理后台为 `https://gateway.example.com/`。管理员登录后可管理账号、接入 Key、额度、日志和指纹检测；Agent 调用使用独立的接入 Key。
+完成 HTTPS 配置后，管理后台为 `https://gateway.example.com/`。独立登录页支持密码显示、错误提示和退出登录；管理员登录后可管理账号、接入 Key、额度、日志和指纹检测；Agent 调用使用独立的接入 Key。
 
 账号数据、Key、日志和管理员凭据保存在 Docker 命名卷中，重建容器后保留。完整配置、更新与备份步骤见 [服务器部署说明](deploy/README.md)。
 
 ## 首次账号授权
 
-首次连接 OpenAI 账号和独立 Codex 额度读取时，需要在浏览器完成回环授权。服务器部署时，在自己的电脑建立转发：
+在公网后台添加账号，点击“登录授权”：
 
-```sh
-ssh -N -L 8787:127.0.0.1:8787 -L 1455:127.0.0.1:1455 user@server
-```
+1. 在新标签页完成 OpenAI 登录并确认套餐调用权限。
+2. 授权结束后会跳到 `http://127.0.0.1:<port>/auth/callback?...`。即使该页面无法连接，也可复制地址栏中的完整地址，粘贴回后台授权窗口。
+3. 网关校验本次授权的 `state`、管理员会话、PKCE 和 ID token，并在云端保存凭据。
+4. 需要查看 Codex 限额时，点击“连接额度读取”，在官方页面输入后台显示的设备码。账号需在 ChatGPT 安全设置中启用设备码登录；额度授权仍核对该账号的邮箱。
 
-保持 SSH 运行，打开 `http://127.0.0.1:8787/`，使用服务器管理员凭据：
+模型授权的回调地址不能直接替换成公网域名。粘贴回调是本网关提供的手动传递方式，不是 OpenAI 的公网自动回调，也不是模型令牌的设备码授权。授权在 10 分钟后失效，回调地址包含一次性授权信息，页面不持久保存它。
 
-1. 添加账号并完成模型授权。
-2. 需要查看官方 Codex 限额时，为同一账号连接独立额度授权。
-3. 创建接入 Key，配置模型权限与使用限额。
-
-**日常后台管理和模型调用直接使用公网域名，无需一直保持 SSH 连接。** 需要重新授权时再开启转发。回调端口、端口冲突和授权流程详见 [首次账号授权](deploy/README.md#首次账号授权)。
+无需 SSH 即可使用以上流程。仍可选择通过端口转发在回环页面完成原来的浏览器回调，详见 [首次账号授权](deploy/README.md#首次账号授权)。
 
 ## Agent 接入
 

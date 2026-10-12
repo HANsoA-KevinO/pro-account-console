@@ -30,7 +30,7 @@ function recoverAdminSession(){
     if(Date.now()-last<60000)return;
     sessionStorage.setItem("ag_admin_recovery_at",String(Date.now()));
     sessionStorage.setItem("ag_admin_recovery_page",q('[data-page][aria-current="page"]')?.dataset.page||"accounts");
-    location.reload();
+    location.replace("/login?reason=expired");
   }catch{/* Storage may be disabled; keep polling stopped and show the error. */}
 }
 async function call(route,options={}){
@@ -152,9 +152,28 @@ async function connectQuota(item){
   showDetails(item.name+" · 连接额度读取",node("div",{},
     node("p",{},"请在官方授权页面登录 "+item.auth.email+"。授权完成后会自动核对邮箱并读取额度；若登录其他账号，将断开这次额度授权。"),
     node("p",{class:"note"},"这是独立的 Codex 额度授权。授权页面完成后可关闭新标签页，回到这里查看同步结果。"),
+    result.mode==="device_code"?node("div",{class:"device-code"},node("span",{class:"note"},"在官方页面输入一次性验证码"),node("strong",{},result.userCode),node("p",{class:"note"},"如未启用设备码登录，请先在 ChatGPT 的安全设置中开启。")):null,
     node("a",{class:"button primary",href:result.authorizationUrl,target:"_blank",rel:"noopener noreferrer"},"打开官方授权 ↗"),
     node("div",{class:"actions"},button("我已完成，刷新状态",async()=>{q("#detail-dialog").close();await refresh();}),button("取消此次授权",async()=>{await post("/api/accounts/"+item.id+"/quota/cancel");q("#detail-dialog").close();await refresh();}))));
   await refresh();
+}
+async function connectAccount(item){
+  const result=await post("/api/accounts/"+item.id+"/login");
+  if(result.completionMode!=="manual_callback"){location.assign(result.authorizationUrl);return;}
+  const input=node("textarea",{name:"callbackUrl",rows:3,required:"",maxlength:16384,autocomplete:"off",spellcheck:"false",placeholder:result.callbackUrl+"?code=…&state=…"});
+  const error=node("p",{class:"note danger",role:"status","aria-live":"polite",hidden:""});
+  const submit=node("button",{type:"submit",class:"primary"},"完成账号授权");
+  const form=node("form",{},node("label",{},"完整回调地址",input),error,node("div",{class:"actions"},submit));
+  form.onsubmit=async event=>{
+    event.preventDefault();submit.disabled=true;error.hidden=true;
+    try{await post("/api/accounts/"+item.id+"/complete-login",{callbackUrl:input.value.trim()});input.value="";q("#detail-dialog").close();await refresh();notice("账号授权已完成。");}
+    catch(problem){error.textContent=problem.message;error.hidden=false;}finally{submit.disabled=false;}
+  };
+  showDetails(item.name+" · 云端账号授权",node("div",{},
+    node("p",{},"1. 打开官方授权页，登录本次要接入的 ChatGPT 账号，并确认套餐调用权限。"),
+    node("a",{class:"button primary",href:result.authorizationUrl,target:"_blank",rel:"noopener noreferrer"},"打开官方授权 ↗"),
+    node("p",{},"2. 最后会跳到 127.0.0.1 的回调地址。页面可能显示无法连接；复制地址栏中的完整地址，回到这里粘贴。"),
+    node("p",{class:"note"},"授权将在 10 分钟后过期。云端核对本次授权并保存凭据；回调地址仅用于完成此次授权。"),form));
 }
 function renderAccounts(){
   q("#pool-total").textContent=data.accounts.length;
@@ -178,7 +197,7 @@ function renderAccounts(){
       node("td",{class:"count","data-label":"累计输入 / 输出"},fmt(item.usage.inputTokens)+" / "+fmt(item.usage.outputTokens),node("div",{class:"note"},fmt(item.usage.requests)+" 次记录")),
       node("td",{"data-label":"操作"},node("div",{class:"actions compact"},
         button(item.enabled?"停用":"启用",async()=>{await post("/api/accounts/"+item.id,{enabled:!item.enabled});await refresh();},item.enabled?"":"primary"),
-        button(item.auth.connected?"重新授权":"登录授权",async()=>{const result=await post("/api/accounts/"+item.id+"/login");location.assign(result.authorizationUrl);}),
+        button(item.auth.connected?"重新授权":"登录授权",()=>connectAccount(item)),
         button("详情",()=>accountDetails(item)),
         button("删除",()=>confirmAccountDeletion(item),"danger"))));
   }));
@@ -314,6 +333,9 @@ async function refresh(){
   const result=await call("/api/status");
   if(version!==refreshVersion)return;
   data=result;
+  q("#admin-identity").textContent=data.administrator?.username||"本机管理";
+  q("#admin-host").textContent=location.host;
+  q("#admin-logout").hidden=!data.administrator?.loginRequired;
   if(!qualityAccountId||!account(qualityAccountId)){qualityAccountId=data.accounts.find(item=>item.enabled&&item.auth.sharing)?.id||data.accounts[0]?.id;scheduleDirty=false;}
   fillSelect("#quality-account-selector",data.accounts);q("#quality-account-selector").value=qualityAccountId||"";
   fillSelect("#usage-account",[...data.accounts,...(data.deletedAccounts||[]).map(item=>({...item,name:item.name+"（已删除）"}))],"所有账号");fillSelect("#usage-agent",data.agents,"所有接入");
@@ -335,6 +357,11 @@ function showPage(page){
 document.querySelectorAll("[data-page]").forEach(item=>item.addEventListener("click",()=>showPage(item.dataset.page)));
 try{const page=sessionStorage.getItem("ag_admin_recovery_page");if(["accounts","keys","usage","quality","alerts"].includes(page))showPage(page);sessionStorage.removeItem("ag_admin_recovery_page");}catch{}
 q("#refresh").onclick=()=>refresh().catch(error=>notice(error.message));
+q("#admin-logout").onclick=async()=>{
+  const button=q("#admin-logout");button.disabled=true;
+  try{await post("/api/admin/logout");clearInterval(refreshTimer);location.replace("/login?reason=logout");}
+  catch(error){notice(error.message);button.disabled=false;}
+};
 q("#sync-quota-all").onclick=async()=>{
   q("#sync-quota-all").disabled=true;
   try{

@@ -16,6 +16,13 @@ function send(origin,route,headers={},body){return new Promise((resolve,reject)=
   req.on("error",reject);req.end(body===undefined?undefined:JSON.stringify(body));
 });}
 
+async function signIn(origin,credentials=auth,previousCookie){
+  const login=await send(origin,"/auth/admin/login",{origin,"content-type":"application/json",...(previousCookie?{cookie:previousCookie}:{})},credentials);
+  if(login.status!==200)return login;
+  const cookie=login.headers["set-cookie"][0].split(";")[0];
+  return send(origin,"/",{cookie});
+}
+
 test("LAN discovery selects private IPv4 and never defaults to public or VPN benchmark addresses",()=>{
   for(const address of ["10.1.2.3","172.16.0.2","172.31.255.254","192.168.3.185"])assert.equal(isPrivateIPv4(address),true);
   for(const address of ["127.0.0.1","0.0.0.0","198.18.0.1","172.32.0.1","8.8.8.8","192.168.1.999","::1"])assert.equal(isPrivateIPv4(address),false);
@@ -23,7 +30,7 @@ test("LAN discovery selects private IPv4 and never defaults to public or VPN ben
   assert.throws(()=>discoverLanAddress({lo0:[{family:"IPv4",internal:true,address:"127.0.0.1"}]}));
 });
 
-test("LAN administrator credentials persist privately and accept only the exact Basic credential",async t=>{
+test("LAN administrator credentials persist privately and accept only the exact credential",async t=>{
   const dir=await temporary(t),first=await loadLanAuth(dir),second=await loadLanAuth(dir);
   assert.deepEqual(first,second);assert.ok(first.password.length>=24);assert.equal((await stat(path.join(dir,"lan-admin.json"))).mode&0o777,0o600);
   assert.equal(acceptsBasicAuth(basic,auth),true);
@@ -44,14 +51,14 @@ test("LAN management is password protected, sessions stay origin scoped, and Res
   });
   t.after(()=>g.close());
   assert.equal(g.server.address().address,"127.0.0.1");assert.equal(g.lanServer.address().address,lanAddress);
-  const denied=await send(g.lanOrigin,"/");assert.equal(denied.status,401);assert.ok(denied.headers["www-authenticate"].startsWith("Basic "));assert.equal(denied.headers["set-cookie"],undefined);
+  const denied=await send(g.lanOrigin,"/");assert.equal(denied.status,303);assert.equal(denied.headers.location,"/login");assert.equal(denied.headers["www-authenticate"],undefined);assert.equal(denied.headers["set-cookie"],undefined);
   assert.equal((await send(g.lanOrigin,"/app.js")).status,403);
   assert.equal((await send(g.lanOrigin,"/api/status",{authorization:"Bearer "+g.store.settings.gatewayKey})).status,403);
   assert.equal((await send(g.lanOrigin,"/healthz",{host:"evil.example",authorization:basic})).status,403);
   assert.equal((await send(g.lanOrigin,"/healthz",{host:new URL(g.origin).host,authorization:basic})).status,403);
   const local=await send(g.origin,"/"),localCookie=local.headers["set-cookie"][0].split(";")[0];assert.equal(local.status,200);
   assert.equal((await send(g.lanOrigin,"/api/status",{authorization:basic,cookie:localCookie})).status,403);
-  const page=await send(g.lanOrigin,"/",{authorization:basic}),cookie=page.headers["set-cookie"][0].split(";")[0],csrf=page.text.match(/data-csrf="([^"]+)"/)[1];
+  const page=await signIn(g.lanOrigin),cookie=page.headers["set-cookie"][0].split(";")[0],csrf=page.text.match(/data-csrf="([^"]+)"/)[1];
   assert.equal(page.status,200);assert.ok(!page.text.includes(auth.password));
   const headers={authorization:basic,cookie,"x-demo-csrf":csrf,"content-type":"application/json",origin:g.lanOrigin};
   const status=await send(g.lanOrigin,"/api/status",headers);assert.equal(status.status,200);assert.equal(JSON.parse(status.text).baseUrl,g.lanOrigin+"/v1");
@@ -60,8 +67,8 @@ test("LAN management is password protected, sessions stay origin scoped, and Res
   assert.equal((await send(g.lanOrigin,"/style.css",{cookie})).status,200);
   assert.equal((await send(g.lanOrigin,"/api/status",{...headers,origin:g.origin})).status,403);
   assert.equal((await send(g.lanOrigin,"/api/keys",{...headers,"x-demo-csrf":"wrong"},{name:"fail"})).status,403);
-  assert.equal((await send(g.lanOrigin,"/api/accounts/account-default/login",headers,{})).status,403);
-  assert.equal((await send(g.lanOrigin,"/api/accounts/account-default/quota/login",headers,{})).status,403);
+  // Both model and quota sign-in can be initiated from the cloud UI;
+  // protocol behavior is verified in the remote authorization tests.
   assert.equal((await send(g.lanOrigin,"/auth/callback?state=anything",headers)).status,403);
   assert.equal((await send(g.lanOrigin,"/v1/responses",{authorization:basic},{model:"m",input:"x"})).status,401);
   const response=await send(g.lanOrigin,"/v1/responses",{authorization:"Bearer "+g.store.settings.gatewayKey,"content-type":"application/json"},{model:"m",input:"x",stream:false});
@@ -73,23 +80,23 @@ test("editing the LAN password takes effect without restart and invalid configur
   const directory=await temporary(t),file=path.join(directory,"lan-admin.json");await writeJson(file,auth);
   const g=await createGateway({sessionWebSockets:false,directory,port:0,lanAddress,adminAuth:auth,adminAuthLoader:()=>readLanAuth(directory)});
   t.after(()=>g.close());
-  assert.equal((await send(g.lanOrigin,"/",{authorization:basic})).status,200);
+  assert.equal((await signIn(g.lanOrigin)).status,200);
   const updated={username:"admin",password:"chosen"};await writeJson(file,updated);
-  assert.equal((await send(g.lanOrigin,"/",{authorization:basic})).status,401);
+  assert.equal((await signIn(g.lanOrigin)).status,401);
   const newBasic="Basic "+Buffer.from(updated.username+":"+updated.password).toString("base64");
-  assert.equal((await send(g.lanOrigin,"/",{authorization:newBasic})).status,200);
+  assert.equal((await signIn(g.lanOrigin,updated)).status,200);
   await writeJson(file,{username:"admin",password:""});
-  assert.equal((await send(g.lanOrigin,"/",{authorization:newBasic})).status,503);
+  assert.equal((await signIn(g.lanOrigin,updated)).status,503);
   assert.equal((await send(g.origin,"/")).status,200);
   await writeJson(file,updated);
-  assert.equal((await send(g.lanOrigin,"/",{authorization:newBasic})).status,200);
+  assert.equal((await signIn(g.lanOrigin,updated)).status,200);
 });
 
-test("LAN administrator login and CSRF survive restart, while stale API sessions never issue a browser challenge",async t=>{
+test("LAN administrator login and CSRF survive restart, while stale API sessions redirect to the login page without a browser challenge",async t=>{
   let lanAddress;try{lanAddress=discoverLanAddress();}catch{t.skip("No private LAN interface on this host");return;}
   const directory=await temporary(t);
   const first=await createGateway({sessionWebSockets:false,directory,port:0,lanAddress,adminAuth:auth});t.after(()=>first.close());
-  const page=await send(first.lanOrigin,"/",{authorization:basic}),cookie=page.headers["set-cookie"][0].split(";")[0],csrf=page.text.match(/data-csrf="([^"]+)"/)[1];
+  const page=await signIn(first.lanOrigin),cookie=page.headers["set-cookie"][0].split(";")[0],csrf=page.text.match(/data-csrf="([^"]+)"/)[1];
   const rawCookie=cookie.slice(cookie.indexOf("=")+1);
   const saved=first.store.db.prepare("SELECT * FROM admin_sessions").get();assert.notEqual(saved.id_hash,rawCookie);assert.equal(saved.id_hash.length,64);
   const port=first.server.address().port;await first.close();
@@ -102,27 +109,27 @@ test("LAN administrator login and CSRF survive restart, while stale API sessions
   }
   second.store.db.prepare("UPDATE admin_sessions SET expires_at=?").run(Date.now()-1);
   const expired=await send(second.lanOrigin,"/api/status",{cookie});assert.equal(expired.status,403);assert.equal(expired.headers["www-authenticate"],undefined);
-  const root=await send(second.lanOrigin,"/",{cookie});assert.equal(root.status,401);assert.ok(root.headers["www-authenticate"]);
-  const renewed=await send(second.lanOrigin,"/",{authorization:basic});assert.equal(renewed.status,200);
+  const root=await send(second.lanOrigin,"/",{cookie});assert.equal(root.status,303);assert.equal(root.headers.location,"/login");assert.equal(root.headers["www-authenticate"],undefined);
+  const renewed=await signIn(second.lanOrigin);assert.equal(renewed.status,200);
 });
 
 test("changing the LAN password revokes existing cookies and accepts a new login without repeated API challenges",async t=>{
   let lanAddress;try{lanAddress=discoverLanAddress();}catch{t.skip("No private LAN interface on this host");return;}
   const directory=await temporary(t),file=path.join(directory,"lan-admin.json");await writeJson(file,auth);
   const g=await createGateway({sessionWebSockets:false,directory,port:0,lanAddress,adminAuth:auth,adminAuthLoader:()=>readLanAuth(directory)});t.after(()=>g.close());
-  const page=await send(g.lanOrigin,"/",{authorization:basic}),cookie=page.headers["set-cookie"][0].split(";")[0];
+  const page=await signIn(g.lanOrigin),cookie=page.headers["set-cookie"][0].split(";")[0];
   assert.equal((await send(g.lanOrigin,"/api/status",{cookie})).status,200);
   const next={username:"admin",password:"changed"};await writeJson(file,next);
   const revoked=await send(g.lanOrigin,"/api/status",{cookie,authorization:basic});assert.equal(revoked.status,403);assert.equal(revoked.headers["www-authenticate"],undefined);
   const newBasic="Basic "+Buffer.from(next.username+":"+next.password).toString("base64");
-  const newPage=await send(g.lanOrigin,"/",{authorization:newBasic,cookie}),newCookie=newPage.headers["set-cookie"][0].split(";")[0];
+  const newPage=await signIn(g.lanOrigin,next,cookie),newCookie=newPage.headers["set-cookie"][0].split(";")[0];
   assert.notEqual(newCookie,cookie);assert.equal((await send(g.lanOrigin,"/api/status",{cookie:newCookie})).status,200);
 });
 
 test("account authorization errors on LAN management APIs do not trigger HTTP Basic prompts",async t=>{
   let lanAddress;try{lanAddress=discoverLanAddress();}catch{t.skip("No private LAN interface on this host");return;}
   const g=await createGateway({sessionWebSockets:false,directory:await temporary(t),port:0,lanAddress,adminAuth:auth});t.after(()=>g.close());
-  const page=await send(g.lanOrigin,"/",{authorization:basic}),cookie=page.headers["set-cookie"][0].split(";")[0];
+  const page=await signIn(g.lanOrigin),cookie=page.headers["set-cookie"][0].split(";")[0];
   const r=await send(g.lanOrigin,"/api/models?accountId=account-default",{cookie});
   assert.equal(r.status,403);assert.equal(JSON.parse(r.text).error.code,"sign_in_required");assert.equal(r.headers["www-authenticate"],undefined);
 });
