@@ -94,7 +94,7 @@ npm run cloudflare:authorize -- --instance YOUR_INSTANCE_ID
 运行镜像使用 Node.js 24、Codex CLI 0.159.2，网关内部监听 18787。
 云端启动入口为 `lib/cloudflare-start.mjs`，原有本机和服务器启动方式保留。
 
-使用自己的域名时，先为该 Worker 添加 Custom Domain，再按实际 HTTPS origin 重新执行 `prepare` 并部署。账号数据保留在相同命名空间中；管理员会话按访问 origin 重新登录。
+使用自己的域名时，先为该 Worker 添加 Custom Domain，再按实际 HTTPS origin 重新执行 `prepare` 并部署，重启网关容器使新的访问 origin 生效。账号数据保留在相同命名空间中；管理员会话按访问 origin 重新登录。
 更改 Worker 名称或创建新账户下的部署会产生独立资源，原命名空间的数据不会自动迁移。
 
 持久化数据库支持 Cloudflare 的 SQLite 恢复机制，见 [SQLite Durable Objects 文档](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)。删除 Durable Object 命名空间会删除其数据。保留本机专用 SSH 密钥和管理员凭据；需要轮换时更新 Worker Secrets 与对应配置。
