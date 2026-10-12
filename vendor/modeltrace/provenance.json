@@ -1,0 +1,12 @@
+{
+  "project": "ModelTrace",
+  "url": "https://github.com/xqy2006/ModelTrace",
+  "commit": "6cd4a8ff0f3f4e49d6d6969dd2fbadfa1569fde2",
+  "license": "MIT",
+  "bankSha256": "f267d0513aa06981d024ec5394746fceddf44e4e8a75fa6bf8304255f4b32d6d",
+  "scorerSha256": "83fa5bd611e18f8339122582335123c8ea168ed242298bb31f4e363abeeb6e4a",
+  "modelCount": 18,
+  "bankBuiltAt": "2026-10-09T06:24:27.469312+00:00",
+  "sameContextCalibrated": false,
+  "multilingualCalibrated": false
+}

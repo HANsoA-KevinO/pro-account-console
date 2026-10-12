@@ -1,0 +1,20 @@
+server {
+    listen 443 ssl;
+    server_name gateway.example.com;
+    ssl_certificate /etc/letsencrypt/live/gateway.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/gateway.example.com/privkey.pem;
+    client_max_body_size 1m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_set_header Host gateway.example.com;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 500s;
+        proxy_send_timeout 500s;
+        # The app trusts only its configured origin, not forwarded headers.
+        # Avoid logging OAuth query parameters or Authorization headers.
+        access_log off;
+    }
+}

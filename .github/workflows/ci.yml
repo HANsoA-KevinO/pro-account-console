@@ -1,0 +1,37 @@
+name: Verify deployment version
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run release:check
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: docker compose config --quiet
+      - run: docker build --tag pro-account-console:ci .
+      - name: Verify empty-state startup and administrator protection
+        run: |
+          docker run --detach --name gateway-check --publish 127.0.0.1:18787:18787 --env GATEWAY_PORT=18787 --env GATEWAY_BIND_HOST=0.0.0.0 pro-account-console:ci
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18787/healthz >/dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:18787/healthz
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:18787/)" = 401
+          docker exec gateway-check codex --version
+      - if: always()
+        run: docker rm --force --volumes gateway-check || true

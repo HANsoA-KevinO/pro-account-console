@@ -1,0 +1,11 @@
+*
+!package.json
+!package-lock.json
+!server.mjs
+!lib/
+!lib/**
+!public/
+!public/**
+!vendor/
+!vendor/modeltrace/
+!vendor/modeltrace/**

@@ -1,0 +1,40 @@
+{
+  "name": "pro-account-console",
+  "version": "0.12.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "start:lan": "node server.mjs --lan",
+    "start:server": "node --env-file=.env server.mjs --server",
+    "test": "node --test test/*.test.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "benchmark": "node scripts/benchmark.mjs",
+    "release:check": "node scripts/release-check.mjs",
+    "release:build": "node scripts/release-check.mjs --build"
+  },
+  "files": [
+    "server.mjs",
+    "lib/",
+    "public/",
+    "vendor/modeltrace/",
+    "deploy/",
+    "Dockerfile",
+    "compose.yaml",
+    ".env.example",
+    "scripts/",
+    "test/",
+    ".github/",
+    "README.md",
+    "package-lock.json",
+    "THIRD_PARTY_NOTICES.md",
+    "docs/"
+  ],
+  "dependencies": {
+    "jose": "^6.1.0",
+    "ws": "^8.22.0"
+  }
+}

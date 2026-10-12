@@ -1,0 +1,33 @@
+# Linux server configuration: loopback listeners remain reachable by SSH
+# forwarding, including the Codex quota authorization callback on port 1455.
+services:
+  gateway:
+    build:
+      context: .
+      args:
+        CODEX_VERSION: "0.159.2"
+    image: pro-account-console:0.12.0
+    network_mode: host
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 150s
+    environment:
+      NODE_ENV: production
+      GATEWAY_PORT: "${GATEWAY_PORT:-8787}"
+      GATEWAY_DATA_DIR: /var/lib/pro-account-console
+      GATEWAY_BIND_HOST: 127.0.0.1
+      GATEWAY_REQUIRE_ADMIN: "true"
+      GATEWAY_PUBLIC_URL: "${GATEWAY_PUBLIC_URL:-}"
+      GATEWAY_UPSTREAM_SESSION_TRANSPORT: "${GATEWAY_UPSTREAM_SESSION_TRANSPORT:-http}"
+      GATEWAY_QUEUE_WAIT_MS: "${GATEWAY_QUEUE_WAIT_MS:-300000}"
+    volumes:
+      - gateway-data:/var/lib/pro-account-console
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+volumes:
+  gateway-data:

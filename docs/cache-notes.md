@@ -1,0 +1,45 @@
+# 缓存与 Fast 验证记录
+
+以下为开发阶段的测试记录；文中 `reports/` 原始日志仅保存在本机，未上传到源码仓库。旧的 HTTP 低命中实验没有发送上游 `session-id`，修正后的默认 HTTP/SSE 路由见项目 README 和部署说明。
+
+## 历史实测
+
+网关透传 `service_tier`、`prompt_cache_key`、`prompt_cache_options` 和消息内容块的 `prompt_cache_breakpoint`，不自动开启 Fast，也不改写调用者的缓存设置。Agent 可添加 `"service_tier": "fast"`；是否可用及实际档位由上游决定。终止响应中的 `fast` 或 `priority` 表示 Fast，`default` 表示这次按 Standard 服务，缺失则未确认；不要根据请求成功或耗时缩短推断已生效。
+
+2026-10-10 实测：dev01/dev03 的 `gpt-6-astra` 上，`fast` 返回 400，`priority` 完成但回传 `default`，没有确认启用 Fast。约 4,600 token 的自动缓存试验（完全重复、改尾部、改前缀及换账号，共 8 次）回传 `cached_tokens=0`；只能说明本轮未观察到命中。参数覆盖还返回 `prompt_cache_options is not supported on this model`。报告保存实际请求和回传信息，后续上游能力变化时可重测，不把通用 API 功能当作套餐路线已开放的保证。
+
+2026-10-12 Sci-Pegasus 真实 Agent 场景：首次两轮请求成功、缓存均为 0；用户回答澄清问题后的下一轮发生 `stream_incomplete`。同账号、同 session 的受控复测收到 `response.completed`，输入 13,142 token，其中 12,928 为缓存 token（98.4%）。这说明该接入能观察到实际缓存命中，不应把较早的零命中样本解释为缓存被禁用。复测只检查模型流，不执行返回的工具。
+
+同日进一步单独测试内容块 `prompt_cache_breakpoint`（未发送 `prompt_cache_options`），上游返回 `400 invalid_parameter`，`error.param=prompt_cache_breakpoint`，提示当前模型不支持。通用 OpenAI API 文档描述 GPT-5.6 及以后支持显式与隐式缓存，但此处的 Pro 授权路线对当前 `gpt-6-astra` 实测拒绝两种显式配置字段；当前仅自动缓存已确认可用。首次两轮正常调用为零命中，98.4% 来自随后受控重放，不能混称为正常多轮命中率。
+
+当日自动缓存复测 18 次全部完成：dev03 合成新上下文/重放/工具结果及用户消息追加共 8 次，dev01 相同合成前缀共 4 次，dev01 原始真实请求重放 3 次，均回传零命中。真实请求增加固定 `prompt_cache_key` 的 3 次回传依次为 0、13,056、0 缓存 token（输入均 13,142），非零样本约 99.3%。各组固定账号和 session，全部缓存值已与网关账本逐条核对。可观察到自动缓存，但复用不稳定；不能把单次非零归因于 cache key 或当作业务命中率保证。详见 `reports/auto-cache-comparison-20261012.json`；样本包含首次请求及改前缀负对照，18 次总体比例不是日常业务命中率。
+
+请求详情的 `streamDiagnostics` 记录上游 HTTP 状态、事件数量/类型、首末事件时间、最后 response 状态、完成输出项数量和终止事件，不保存模型文本或工具参数。未收到终止事件仍明确返回 `stream_incomplete`，不把已生成部分内容当作成功，也不自动换账号重试。SSE JSON 缺少 `type` 时使用其明确的 `event:` 名称，避免遗漏合法终止/错误事件。
+
+测试脚本默认只展示方案，添加 `--run` 才调用模型并消耗账号额度：
+
+```bash
+npm run benchmark -- fast
+npm run benchmark -- fast --run --model gpt-6-astra --pairs 3
+npm run benchmark -- fast --run --fast-tier priority --pairs 3
+npm run benchmark -- cache
+npm run benchmark -- cache --run --model gpt-6-astra
+```
+
+默认读取本地网关 key，不输出凭据；也可用 `GATEWAY_BENCHMARK_URL` / `GATEWAY_BENCHMARK_KEY` 指定网关和 key。报告保存在 `reports/`，每次独立 runId，每个样本完成即保存；失败停止后续请求，不隐藏重试。无需重启服务或改动账号池。记录实际账号、会话分配、模型与档位、排队时间、输入/缓存/缓存写入/输出/推理 token、文本首字和输出时间。
+
+- Fast：默认 3 对、6 次串行请求，短输入、256 个整数输出、固定推理 low；Standard/Fast 交替改变先后顺序，同一对输入一致，同一 `session_id` 固定账号。只对实际档位正确、同账号同模型、零排队且零缓存的完整组计算倍率。输出速度按可见输出 token / 首个至最后一个 delta 时间估算，受 SSE 分块影响；推理用量缺失则显示未知。
+- 缓存：默认 8 次串行请求，使用合成长上下文，测上游自动缓存，不传 `prompt_cache_options`。包含首次写入、两次完全重复、两次只改尾部、一次改前缀，以及两次候选跨账号请求。必须核对实际账号确实改变，相同账号时不能算跨账号样本。`--no-cross-account` 省略最后两次，`--lines` 控制资料长度。明确支持缓存覆盖的接入可用 `--cache-mode implicit` / `explicit` / `both`；both 为 14 次，explicit 在稳定 developer 文本末尾放断点。当前实测的 gpt-6-astra 套餐路由返回 `prompt_cache_options is not supported on this model`，因此默认采用自动模式；官方通用 API 文档的功能仍需逐接入确认。
+- token 命中率 = 已知样本 `sum(cached_tokens)/sum(input_tokens)`；请求命中率 = `cached_tokens>0` 的已知请求占比。首写与复用分开，缺失 metadata 不当作零。前缀必须达到该模型缓存阈值，首写的实际输入用量需要核对；延迟仅作辅助证据。
+- 后续可用 3–5 个新 runId 复测各账号，再加入逐轮追加的对话/工具结果、改 tools/推理设置、等待后重用等真实 agent 场景。保持其它变量不变。跨账号与保留时间结果只适用于实际测试的账号、模型、时间和接入方式。
+
+依据：[Fast 参数与实际档位](https://developers.openai.com/api/docs/guides/fast-mode)、[Codex Fast 可用性与额度消耗](https://learn.chatgpt.com/docs/agent-configuration/speed)、[缓存阈值与断点](https://developers.openai.com/api/docs/guides/prompt-caching)、[套餐接入限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)。API 价格不直接推算成 Pro 剩余额度，官方额度仍通过独立读取显示。
+
+账号并发名额在出队执行时同步预留，流式请求一直占用到连接完成或中断；成功、失败、授权失败和断开连接都会释放名额。调低上限不取消已在执行的请求，后续按新值调度。手动指纹检测和管理员测试也会排队，取消等待中的检测会立即退出队列；定期检测遇到满额会推迟到后续检查。模型列表和额度同步不占模型并发名额；其他客户端直接使用该账号的请求不在本网关统计范围内。
+
+队列按先到先执行调度，受限于各账号/key的可用名额；一个满额账号不会阻塞其他可用账号。新会话等待期间不提前绑定账号，出队时选取可用账号。同一会话的后续请求仍使用既定账号。
+
+排队期间不调用模型、不占并发名额，也不计入已执行用量。客户端断开或取消即退出；出队前重新检查 key、权限、账号状态与绑定身份。每日请求/token限额仍明确拒绝，不靠排队绕过。默认最多等待 5 分钟，超时返回 `504 queue_wait_timeout`；模型执行的 120 秒超时从出队后开始计算，Agent 的 HTTP 超时应覆盖排队和执行时间。可用 `GATEWAY_QUEUE_WAIT_MS` 设置等待毫秒数。
+
+页面显示总排队数和各账号已绑定/固定账号的等待数；尚未分配账号的新会话计入总队列。日志详情、CSV 和 `x-gateway-queue-wait-ms` 响应头记录实际排队耗时。等待中的请求体仅在内存中，服务停止会取消队列并返回 `503 gateway_stopping`，重启不自动重放模型请求。
+

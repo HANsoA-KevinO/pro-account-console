@@ -1,0 +1,17 @@
+node_modules/
+.data/
+*.log
+data/
+reports/
+dist/
+.env
+.env.*
+!.env.example
+secrets/
+backups/
+*.sqlite
+*.sqlite-*
+*.db
+*.pem
+*.key
+.DS_Store

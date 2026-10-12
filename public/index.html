@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pro Account Console</title><link rel="stylesheet" href="/style.css"><script src="/app.js" type="module"></script></head>
+<body data-csrf="__CSRF__">
+<div class="app-shell">
+<aside class="sidebar">
+  <div class="brand"><span class="brand-mark">G</span><div>Pro Account Console<small>全局账号池管理</small></div></div>
+  <nav aria-label="管理页面">
+    <button data-page="accounts" aria-current="page"><span>01</span>账号池</button>
+    <button data-page="keys"><span>02</span>接入 Key</button>
+    <button data-page="usage"><span>03</span>全部使用日志</button>
+    <button data-page="quality"><span>04</span>模型指纹</button>
+    <button data-page="alerts"><span>05</span>提醒与审计<b id="alert-count">0</b></button>
+  </nav>
+  <div class="sidebar-foot"><span class="status-dot"></span>仅本机管理<small>127.0.0.1:8787</small><p>所有 key 共用账号池<br>已启用账号统一轮询</p></div>
+</aside>
+<main>
+  <header><span class="eyebrow">GLOBAL ACCOUNT POOL</span><div class="header-actions"><span id="pool-status" class="badge">正在读取账号池</span><button id="refresh">刷新全部状态</button></div></header>
+  <div id="notice" role="status" aria-live="polite" hidden></div>
+  <section data-panel="accounts">
+    <div class="page-heading"><div><h1>账号池</h1><p>统一查看全部账号。已启用、已授权的账号参与轮询，所有接入 key 共用这个池。</p></div><div class="actions compact"><button id="sync-quota-all">同步全部额度</button><button id="add-account" class="primary">＋ 添加 Pro 账号</button></div></div>
+    <div class="summary-strip"><div>全部账号<strong id="pool-total">—</strong></div><div>可参与轮询<strong id="pool-ready">—</strong><small>停用或未授权账号不参与</small></div><div>累计已报告输入 / 输出<strong id="pool-tokens">—</strong><small id="pool-requests"></small></div></div>
+    <div class="panel table-wrap account-table"><table><thead><tr><th>账号</th><th>池内状态</th><th>官方额度 · 按来源</th><th>累计输入 / 输出</th><th>操作</th></tr></thead><tbody id="account-rows"></tbody></table></div>
+    <div class="footnote">额度读取需逐个账号完成一次 Codex 授权。连接后在服务运行期间每 5 分钟自动同步，停用账号也能查看额度。Codex 限额按窗口显示，不代表 Responses 接入的总余额，也不用于自动切换账号。</div>
+  </section>
+  <section data-panel="keys" hidden>
+    <div class="page-heading"><div><h1>接入 Key</h1><p>Key 只管理权限和使用限额。每个 key 都从同一个账号池轮询分发，不绑定账号。</p></div><button id="add-key" class="primary">＋ 添加接入 Key</button></div>
+    <div class="endpoint panel"><div><span class="eyebrow">RESPONSES BASE URL</span><code id="base-url">—</code></div><button id="copy-default">复制默认接入配置</button></div>
+    <div id="key-cards" class="key-grid"></div>
+    <div class="footnote">每日限额按 Asia/Tokyo 计算。token 阈值会暂停后续请求，单次请求可能超过阈值；用量未知时不会按零消耗放行。</div>
+  </section>
+  <section data-panel="usage" hidden>
+    <div class="page-heading"><div><h1>全部使用日志</h1><p>默认显示全部账号、全部 key 的调用。每条记录注明实际账号，也可以按账号、key 和模型筛选。</p></div><a id="export-usage" class="button" href="/api/usage.csv">导出 CSV</a></div>
+    <div class="filters panel"><label>时间范围<select id="usage-period"><option value="all">全部历史</option><option value="today">今天 · 日本时间</option><option value="7">最近 7 天</option><option value="30">最近 30 天</option></select></label><label>账号<select id="usage-account"><option value="">所有账号</option></select></label><label>接入 Key<select id="usage-agent"><option value="">所有接入</option></select></label><label>模型<input id="usage-model" placeholder="留空显示所有模型"></label><button id="apply-usage">应用筛选</button><button id="reset-usage">显示全部</button></div>
+    <div class="summary-strip"><div><span id="usage-scope-label">全部请求记录</span><strong id="usage-count">—</strong><small id="usage-success"></small></div><div>输入 / 输出 tokens<strong id="usage-tokens">—</strong><small id="usage-details"></small></div><div>平均耗时<strong id="usage-duration">—</strong><small id="usage-unknown"></small></div></div>
+    <div id="usage-breakdown" class="breakdown"></div>
+    <div class="panel table-wrap"><table><thead><tr><th>时间</th><th>实际账号</th><th>接入 / 来源</th><th>请求 → 返回模型</th><th>结果</th><th>输入 / 输出</th><th>耗时</th><th>详情</th></tr></thead><tbody id="usage-rows"></tbody></table><div class="pager"><button id="usage-prev">上一页</button><span id="usage-page" class="note"></span><button id="usage-next">下一页</button></div></div>
+  </section>
+  <section data-panel="quality" hidden>
+    <div class="page-heading"><div><span class="eyebrow">MODEL FINGERPRINT / MODELTRACE</span><h1>模型指纹检测</h1><p>用数字生成偏好识别候选模型，结合复测和历史变化给出详细的疑似判断。</p></div><span id="fingerprint-bank-state" class="badge">正在读取指纹库</span></div>
+    <div class="panel fingerprint-controls"><div class="section-heading"><h2>发起检测</h2><button id="quality-load-models">读取模型列表</button></div><label>检测账号<select id="quality-account-selector"></select></label><div class="three-fields"><label>请求模型<select id="quality-model"><option value="">先读取模型</option></select></label><label>推理参数<select id="quality-effort"><option value="default">模型默认值</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></label><label>异常复测<select id="quality-rounds"><option value="1">追加 1 组 · 最多 6 次请求</option><option value="0">不追加 · 3 次请求</option><option value="2">追加 2 组 · 最多 9 次请求</option><option value="3">追加 3 组 · 最多 12 次请求</option></select></label></div><div class="actions"><button id="quality-run" class="primary">开始指纹检测 · 3 条探针</button><span class="note">消耗所选账号的模型额度，固定账号采样</span></div><p class="note">直接测试并对指纹库内全部模型计算归因权重，结果从高到低排序。基础检测生成三条数字序列；出现明显差异或候选变化时，按设置追加独立复测。</p></div>
+    <div class="panel"><div class="section-heading"><h2>所选账号的定期检测</h2><span id="quality-schedule-state" class="badge">关闭</span></div><div class="schedule-controls"><label class="checkbox"><input id="quality-schedule-enabled" type="checkbox">启用此模型的定期指纹检测</label><label>运行间隔<select id="quality-interval"><option value="1">每 1 小时</option><option value="6" selected>每 6 小时</option><option value="12">每 12 小时</option><option value="24">每 24 小时</option></select></label><button id="quality-save-policy">保存设置</button></div><p class="note">保存当前请求模型、参数及复测组数；仅在本地服务运行且该账号启用、已授权时执行。旧版答题检查的定期任务已关闭。</p></div>
+    <div class="section-heading"><h2>检测记录</h2><label class="inline-field">记录范围<select id="fingerprint-history-filter"><option value="">全部账号</option></select></label></div>
+    <div id="quality-history"></div>
+    <div class="pager"><button id="fingerprint-prev">上一页</button><span id="fingerprint-page" class="note"></span><button id="fingerprint-next">下一页</button></div>
+    <details class="panel legacy-records"><summary>旧版答题检查记录 · 已保留</summary><p class="note">保留原来的答题结果与基线，不再生成新的答题检查。</p><button id="legacy-quality-load">查看所选账号旧记录</button><div id="legacy-quality-history"></div></details>
+    <div class="footnote">评分来自 <a href="https://github.com/xqy2006/ModelTrace" target="_blank" rel="noopener noreferrer">ModelTrace</a>。候选百分比表示当前参考库内的相对权重，用于疑似判断；检测不会自动停用账号或改变模型。</div>
+  </section>
+  <section data-panel="alerts" hidden>
+    <div class="page-heading"><div><h1>提醒与审计</h1><p>统一查看全部账号的授权、额度和质量提醒。</p></div></div>
+    <div id="alert-list"></div>
+    <div class="panel"><div class="section-heading"><h2>最近管理操作</h2><span class="badge">不记录令牌和原始提示词</span></div><div id="audit-list"></div></div>
+  </section>
+  <footer><span>全局账号池 · 统一轮询 · Key 仅管理接入与限额</span><span id="last-updated">正在连接服务</span></footer>
+</main>
+</div>
+<dialog id="editor-dialog"><form id="editor-form"><div class="section-heading"><h2 id="editor-title"></h2><button type="button" id="editor-close" aria-label="关闭">×</button></div><div id="editor-fields"></div><div class="actions"><button type="submit" id="editor-save" class="primary">保存</button><button type="button" id="editor-cancel">取消</button></div><div id="editor-error" role="alert" class="note"></div></form></dialog>
+<dialog id="detail-dialog"><div class="section-heading"><h2 id="detail-title"></h2><button id="detail-close" aria-label="关闭详情">×</button></div><div id="detail-content"></div></dialog>
+</body></html>
