@@ -43,3 +43,13 @@ npm run benchmark -- cache --run --model gpt-6-astra
 
 页面显示总排队数和各账号已绑定/固定账号的等待数；尚未分配账号的新会话计入总队列。日志详情、CSV 和 `x-gateway-queue-wait-ms` 响应头记录实际排队耗时。等待中的请求体仅在内存中，服务停止会取消队列并返回 `503 gateway_stopping`，重启不自动重放模型请求。
 
+
+## HTTP 会话标识与真实工具验证
+
+2026-10-12 的 12 次合成纯 HTTP 对照中，固定上游会话头的两次重复输入分别命中 95.2%，只填写请求体缓存键或每次更换会话头的组均为零。另三轮每次独立提交完整历史、未填写请求体缓存键的对话，后两轮合计命中 94.4%。此前真实研究的低命中 HTTP 样本缺少此请求头，不能据此认为 HTTP 本身不能稳定复用缓存。详见 `reports/codex-http-caching-findings-20261012.json`。依据：[官方 HTTP/SSE 配置](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server)、[Codex 会话与缓存亲和性源码](https://github.com/openai/codex/blob/ff6aec96948b70d94983af2641a6b67c94faeff5/codex-rs/core/src/client.rs#L575-L596)。
+
+同日正式部署后，Sci-Pegasus 使用原有地址和 Key 的 Write → Read → Write 工具流程共 4 次模型请求全部完成。首次缓存为零，后续三次分别命中 97.2%、98.2%、97.3%，后续输入加权合计 97.5%，包括首次输入的整体比例为 73.4%。账本与客户端用量逐条一致，同账号、同上游会话 UUID，三次工具续接均回传本轮路由状态，每次仍提交完整历史。131 项模拟回归全部通过。报告：`reports/http-session-deployment-20261012.json`。这是有界工具流程验证，不是长时间业务命中率保证。
+
+
+2026-10-12 的较早真实单 Agent 研究中，同账号、相同初始输入和工具定义，未发送上游 `session-id` 的 HTTP 17 次请求整体 token 命中率为 0.79%；持久 WebSocket 16 次为 89.23%，15 次续接全部命中。省略缓存键与填固定键的 WebSocket 小对照均约 94.9%。这些旧 HTTP 数据未包含本次补齐的会话请求头，不代表修正后的 HTTP 命中率。依据：[连接内续接及恢复](https://developers.openai.com/api/docs/guides/websocket-mode)、[套餐接入限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)。
+
