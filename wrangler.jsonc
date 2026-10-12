@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pro-account-console",
+  "main": "deploy/cloudflare/worker.mjs",
+  "compatibility_date": "2026-10-12",
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": {"PUBLIC_ORIGIN": "", "DATA_JURISDICTION": "us"},
+  "observability": {"enabled": false},
+  "containers": [{
+    "class_name": "GatewayContainer",
+    "image": "./cloudflare.Dockerfile",
+    "image_build_context": ".",
+    "max_instances": 1,
+    "instance_type": "basic",
+    "constraints": {"jurisdiction":"us", "regions":["WNAM"]},
+    "rollout_step_percentage": 100,
+    "rollout_active_grace_period": 150,
+    "ssh": {"enabled": true},
+    "authorized_keys": []
+  }],
+  "durable_objects": {"bindings": [
+    {"name": "GATEWAY", "class_name": "GatewayContainer"},
+    {"name": "STATE", "class_name": "GatewayState"}
+  ]},
+  "exports": {
+    "GatewayContainer": {"type": "durable-object", "storage": "sqlite"},
+    "GatewayState": {"type": "durable-object", "storage": "sqlite"}
+  }
+}

@@ -1,6 +1,6 @@
 {
   "name": "pro-account-console",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -14,7 +14,13 @@
     "smoke": "node scripts/smoke.mjs",
     "benchmark": "node scripts/benchmark.mjs",
     "release:check": "node scripts/release-check.mjs",
-    "release:build": "node scripts/release-check.mjs --build"
+    "release:build": "node scripts/release-check.mjs --build",
+    "cloudflare:login": "wrangler login --use-keyring",
+    "cloudflare:whoami": "wrangler whoami",
+    "cloudflare:prepare": "node scripts/cloudflare.mjs prepare",
+    "cloudflare:check": "node scripts/cloudflare.mjs check",
+    "cloudflare:deploy": "node scripts/cloudflare.mjs deploy",
+    "cloudflare:authorize": "node scripts/cloudflare.mjs authorize"
   },
   "files": [
     "server.mjs",
@@ -23,6 +29,8 @@
     "vendor/modeltrace/",
     "deploy/",
     "Dockerfile",
+    "cloudflare.Dockerfile",
+    "wrangler.jsonc",
     "compose.yaml",
     ".env.example",
     "scripts/",
@@ -36,5 +44,8 @@
   "dependencies": {
     "jose": "^6.1.0",
     "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "wrangler": "4.149.0"
   }
 }

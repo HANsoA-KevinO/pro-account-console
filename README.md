@@ -2,7 +2,7 @@
 
 多个已授权 Pro 账号的 Responses 网关与管理控制台。一个接入 Key 可以使用统一账号池；同一对话固定账号，账号和 Key 分别管理并发与用量。
 
-**支持 Linux 服务器部署和公网 HTTPS 访问，也支持本机与局域网运行。** 服务器部署后，管理员通过域名管理账号，Agent 使用公网 Base URL + 接入 Key 调用模型。
+**支持 Cloudflare 全托管、Linux 服务器部署和公网 HTTPS 访问，也支持本机与局域网运行。** 服务器部署后，管理员通过域名管理账号，Agent 使用公网 Base URL + 接入 Key 调用模型。
 
 ## 主要功能
 
@@ -13,10 +13,18 @@
 - 全量用量日志、缓存统计、筛选、CSV 导出和操作审计。
 - 每账号独立 Codex 额度读取，以及 ModelTrace 指纹排序和疑似差异提醒。
 
+## 全部托管到 Cloudflare
+
+使用 Workers + Containers + SQLite Durable Objects。Cloudflare 提供 HTTPS 后台与 Responses API，账号、Key、日志和会话绑定保存在 Durable Objects 中；容器休眠或重建后恢复运行配置。
+
+需要 Workers Paid、已授权的 Wrangler，以及构建镜像时运行的本机 Docker。先使用 `workers.dev` 地址，新部署由 CLI 创建。首次账号授权通过 Wrangler SSH 转发到云端容器，日常使用直接走公网。
+
+配置、部署、管理员登录和授权步骤见 [Cloudflare 部署说明](deploy/cloudflare/README.md)。
+
 ## 部署到服务器并通过公网使用
 
 需要 Linux 服务器、Docker Engine/Compose，以及指向服务器的域名和 HTTPS 证书。
-当前版本为 `0.12.0`，镜像包含 Node.js 24 和用于额度读取的 Codex CLI 0.159.2。
+当前版本为 `0.13.0`，镜像包含 Node.js 24 和用于额度读取的 Codex CLI 0.159.2。
 
 ### 1. 获取源码并配置访问域名
 

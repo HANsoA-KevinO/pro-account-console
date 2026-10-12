@@ -15,3 +15,6 @@ backups/
 *.pem
 *.key
 .DS_Store
+.wrangler/
+.dev.vars
+.dev.vars.*

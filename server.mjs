@@ -15,6 +15,7 @@ import {QuotaSync} from "./lib/quota.mjs";
 import {Fingerprints,loadFingerprintLibrary} from "./lib/fingerprint.mjs";
 import {isPrivateIPv4,discoverLanAddress,loadLanAuth,readLanAuth,validateLanAuth,acceptsBasicAuth} from "./lib/network.mjs";
 import {runtimeConfig,publicOrigin} from "./lib/runtime.mjs";
+import {keepStreamAlive} from "./lib/sse-keepalive.mjs";
 
 const root=path.dirname(fileURLToPath(import.meta.url));
 const contentTypes={"/app.js":"text/javascript","/style.css":"text/css"};
@@ -36,14 +37,15 @@ function csv(rows) {
   ].map(row=>row.map(cell).join(",")).join("\r\n");
 }
 
-export async function createGateway({port=8787,directory=path.join(root,".data"),fetchImpl=fetch,oauthFactory,quotaClientFactory,lanAddress=null,adminAuth=null,adminAuthLoader=null,queueWaitMs=300000,sessionWebSockets=false,socketFactory,socketOptions={},httpSessionOptions={},bindHost="127.0.0.1",publicUrl=null,requireAdmin=false}={}) {
+export async function createGateway({port=8787,directory=path.join(root,".data"),fetchImpl=fetch,oauthFactory,quotaClientFactory,lanAddress=null,adminAuth=null,adminAuthLoader=null,queueWaitMs=300000,sessionWebSockets=false,socketFactory,socketOptions={},httpSessionOptions={},bindHost="127.0.0.1",publicUrl=null,requireAdmin=false,databaseFactory,streamKeepaliveMs=0,adminCookieName="ag_admin",loginCookieName="ag_login"}={}) {
   publicUrl=publicOrigin(publicUrl);
+  if(!/^[a-zA-Z][\w-]{0,63}$/.test(adminCookieName)||!/^[a-zA-Z][\w-]{0,63}$/.test(loginCookieName)||adminCookieName===loginCookieName)throw new Error("Invalid gateway cookie names");
   if(!["127.0.0.1","0.0.0.0"].includes(bindHost))throw new Error("Invalid bindHost");
   requireAdmin=requireAdmin||!!publicUrl||bindHost!=="127.0.0.1";
   if(requireAdmin)validateLanAuth(adminAuth);
   if(lanAddress&&(publicUrl||bindHost!=="127.0.0.1"))throw new Error("LAN and server mode cannot be combined");
   if(lanAddress){if(!isPrivateIPv4(lanAddress))throw new Error("内网入口只支持私有 IPv4 地址。");validateLanAuth(adminAuth);}
-  const store=await new Store(directory).init();
+  const store=await new Store(directory,{databaseFactory}).init();
   const quota=new QuotaSync(store,{clientFactory:quotaClientFactory});
   const fingerprintLibrary=await loadFingerprintLibrary();
   const oauths=new Map(),catalogs=new Map();
@@ -119,7 +121,7 @@ export async function createGateway({port=8787,directory=path.join(root,".data")
       if((!localHost&&!lanHost&&!publicHost)||(localHost&&!loopback&&!requireAdmin))throw new PublicError(403,"invalid_host","请使用配置的本机、内网或部署地址访问。");
       const requestOrigin=publicHost?publicUrl:localHost?origin:lanOrigin;
       const url=new URL(req.url,requestOrigin),segments=url.pathname.split("/").filter(Boolean),query=Object.fromEntries(url.searchParams);
-      const existingAdminSession=store.adminSession(cookies(req).ag_admin);
+      const existingAdminSession=store.adminSession(cookies(req)[adminCookieName]);
       let authFingerprint=null,validLanSession=false;
       if(req.headers.origin&&req.headers.origin!==requestOrigin)throw new PublicError(403,"invalid_origin","拒绝跨站请求。");
       if(req.headers["sec-fetch-site"]==="cross-site"&&!["/","/auth/callback"].includes(url.pathname))throw new PublicError(403,"cross_site_request","拒绝跨站请求。");
@@ -144,7 +146,7 @@ export async function createGateway({port=8787,directory=path.join(root,".data")
         const existing=existingAdminSession;
         const session=existing&&existing.origin===requestOrigin&&(!protectedAdmin||validLanSession)?existing:{id:randomBytes(32).toString("base64url"),csrf:randomBytes(32).toString("base64url"),expiresAt:Date.now()+86400000,origin:requestOrigin,authFingerprint};
         store.saveAdminSession(session);
-        res.setHeader("set-cookie","ag_admin="+session.id+"; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400"+(requestOrigin.startsWith("https:")?"; Secure":""));
+        res.setHeader("set-cookie",adminCookieName+"="+session.id+"; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400"+(requestOrigin.startsWith("https:")?"; Secure":""));
         res.setHeader("content-security-policy","default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
         res.writeHead(200,{"content-type":"text/html; charset=utf-8","cache-control":"no-store"});
         return res.end((await readFile(path.join(root,"public/index.html"),"utf8")).replace("__CSRF__",session.csrf));
@@ -154,10 +156,10 @@ export async function createGateway({port=8787,directory=path.join(root,".data")
         const state=url.searchParams.get("state");
         const entry=[...oauths].find(([,oauth])=>oauth.pending?.has(state));
         if(entry){
-          try{await entry[1].callback(url.searchParams,cookies(req).ag_login);store.audit("account_authorized",{accountId:entry[0],sharing:entry[1].status().sharing});}
+          try{await entry[1].callback(url.searchParams,cookies(req)[loginCookieName]);store.audit("account_authorized",{accountId:entry[0],sharing:entry[1].status().sharing});}
           catch(error){entry[1].loginError=error instanceof PublicError?error.message:"登录验证失败，请重新登录。";store.alert("authorization_required",entry[0],null,null,entry[1].loginError,{code:error.code||"callback_failed"});}
         }else store.alert("authorization_required",null,null,null,"登录回调已过期或服务曾重启，请从账号页面重新授权。",{});
-        res.writeHead(303,{location:"/","cache-control":"no-store","set-cookie":"ag_login=; HttpOnly; SameSite=Lax; Path=/auth/callback; Max-Age=0"});return res.end();
+        res.writeHead(303,{location:"/","cache-control":"no-store","set-cookie":loginCookieName+"=; HttpOnly; SameSite=Lax; Path=/auth/callback; Max-Age=0"});return res.end();
       }
       if(url.pathname.startsWith("/api/")){
         const session=existingAdminSession;
@@ -226,7 +228,7 @@ export async function createGateway({port=8787,directory=path.join(root,".data")
             if(segments[3]==="login"){
               if(!store.getAccount(id).enabled)throw new PublicError(403,"account_disabled","请先启用该账号。");
               const login=await getOAuth(id).start();
-              res.setHeader("set-cookie","ag_login="+login.browser+"; HttpOnly; SameSite=Lax; Path=/auth/callback; Max-Age=600");
+              res.setHeader("set-cookie",loginCookieName+"="+login.browser+"; HttpOnly; SameSite=Lax; Path=/auth/callback; Max-Age=600");
               return json(res,200,{authorizationUrl:login.url});
             }
             if(segments[3]==="logout"){const result=await getOAuth(id).logout();store.audit("account_disconnected",{accountId:id});return json(res,200,result);}
@@ -236,7 +238,7 @@ export async function createGateway({port=8787,directory=path.join(root,".data")
             if(segments.length===3)return json(res,200,await store.updateAgent(segments[2],await readBody(req)));
           }
           if(segments[1]==="alerts"&&segments[2]){store.acknowledge(segments[2]);return json(res,200,{ok:true});}
-          if(url.pathname==="/api/login"){store.assertAccountAvailable(store.management.activeAccountId);const login=await getOAuth(store.management.activeAccountId).start();res.setHeader("set-cookie","ag_login="+login.browser+"; HttpOnly; SameSite=Lax; Path=/auth/callback; Max-Age=600");return json(res,200,{authorizationUrl:login.url});}
+          if(url.pathname==="/api/login"){store.assertAccountAvailable(store.management.activeAccountId);const login=await getOAuth(store.management.activeAccountId).start();res.setHeader("set-cookie",loginCookieName+"="+login.browser+"; HttpOnly; SameSite=Lax; Path=/auth/callback; Max-Age=600");return json(res,200,{authorizationUrl:login.url});}
           if(url.pathname==="/api/logout")return json(res,200,await getOAuth(store.management.activeAccountId).logout());
         }
       }
@@ -246,6 +248,7 @@ export async function createGateway({port=8787,directory=path.join(root,".data")
         if(req.method==="GET"&&url.pathname==="/v1/usage")return json(res,200,{name:agent.name,routing:"central",limits:{dailyRequests:agent.dailyRequests,dailyTokenThreshold:agent.dailyTokenThreshold,maxConcurrent:agent.maxConcurrent},today:{...store.agentUsage(agent),queued:admissions.waitingForAgent(agent.id)},queue:{waiting:admissions.waitingForAgent(agent.id),waitTimeoutMs:queueWaitMs},usage:store.report({...query,agentId:agent.id}),quota:{officialRemaining:null,scope:"per-account",note:"实际账号由统一路由选择，官方套餐额度分别管理。"}});
         if(req.method==="POST"&&url.pathname==="/v1/responses"){
           const body=await readBody(req);normalizeRequest(body);
+          if(body.stream===true)keepStreamAlive(res,streamKeepaliveMs);
           const waiting=new AbortController(),cancel=()=>waiting.abort();res.on("close",cancel);
           let context;
           try{context=await admissions.agent(req.headers.authorization,body.model.trim(),{sessionId:sessionIdFromRequest(body),signal:waiting.signal});}
@@ -261,7 +264,10 @@ export async function createGateway({port=8787,directory=path.join(root,".data")
       // is correct. Only the initial document navigation issues that challenge.
       const adminApi401=status===401&&(requireAdmin||(lanOrigin&&req.headers.host===new URL(lanOrigin).host))&&req.url.startsWith("/api/");
       if(!res.headersSent&&!res.destroyed)json(res,adminApi401?403:status,{error:{code:error instanceof PublicError?error.code:"internal_error",message:error instanceof PublicError?error.message:"操作失败，请稍后重试。"}});
-      else if(!res.destroyed)res.end();
+      else if(!res.destroyed){
+        if(res.gatewayStreaming)res.end("event: error\ndata: "+JSON.stringify({type:"error",code:error instanceof PublicError?error.code:"internal_error",message:error instanceof PublicError?error.message:"操作失败，请稍后重试。",status})+"\n\n");
+        else res.end();
+      }
     }
   };
   const server=http.createServer(handler);

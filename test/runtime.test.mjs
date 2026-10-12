@@ -24,12 +24,12 @@ test("invalid origins and unsafe or ambiguous startup settings fail before openi
 
 const auth={username:"admin",password:"fixture-password"};
 const basic="Basic "+Buffer.from(auth.username+":"+auth.password).toString("base64");
-async function fixture(t){
+async function fixture(t,options={}){
   const directory=await mkdtemp(path.join(os.tmpdir(),"gateway-runtime-"));t.after(()=>rm(directory,{recursive:true,force:true}));const calls=[];
   const g=await createGateway({port:0,directory,bindHost:"0.0.0.0",publicUrl:"https://gateway.example.com",adminAuth:auth,oauthFactory:()=>({status:()=>({connected:true,sharing:true}),accessToken:async()=>"UPSTREAM_FIXTURE"}),fetchImpl:async(_url,options)=>{
     const body=JSON.parse(options.body);calls.push({body,headers:options.headers});
     return new Response('data: '+JSON.stringify({type:"response.completed",response:{id:"resp",model:body.model,status:"completed",output:[],usage:{input_tokens:1,output_tokens:1}}})+'\n\n',{headers:{"content-type":"text/event-stream"}});
-  }});t.after(()=>g.close());
+  },...options});t.after(()=>g.close());
   const request=(pathname,options={})=>new Promise((resolve,reject)=>{
     const req=sendHttp(new URL(pathname,g.origin),{method:options.method||"GET",headers:{host:"gateway.example.com",...options.headers}},res=>{
       const chunks=[];res.on("data",chunk=>chunks.push(chunk));res.on("end",()=>resolve(new Response(Buffer.concat(chunks),{status:res.statusCode,headers:res.headers})));
@@ -65,4 +65,13 @@ test("public account authorization cannot create a non-loopback OAuth callback",
   const g=await fixture(t),home=await g.request("/",{headers:{authorization:basic}});const cookie=home.headers.get("set-cookie").split(";")[0];await home.text();
   const session=g.store.adminSession(cookie.slice("ag_admin=".length));
   const response=await g.request("/api/accounts/account-default/login",{method:"POST",headers:{cookie,"x-demo-csrf":session.csrf}});assert.equal(response.status,403);assert.equal((await response.json()).error.code,"local_login_required");
+});
+
+
+test("Cloudflare admin cookies do not overwrite or accept the local gateway cookie",async t=>{
+  const g=await fixture(t,{adminCookieName:"ag_cf_admin",loginCookieName:"ag_cf_login"});
+  const home=await g.request("/",{headers:{authorization:basic}});assert.equal(home.status,200);
+  const cookie=home.headers.get("set-cookie").split(";")[0];assert.ok(cookie.startsWith("ag_cf_admin="));
+  assert.equal((await g.request("/api/status",{headers:{cookie}})).status,200);
+  assert.equal((await g.request("/api/status",{headers:{cookie:cookie.replace("ag_cf_admin=","ag_admin=")}})).status,403);
 });
