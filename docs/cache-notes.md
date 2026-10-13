@@ -12,6 +12,21 @@
 
 同日云端三次指纹样本约 21～22 可见 token/s，均无排队；它们与上述短输出控样的任务内容和推理设置不同，不能据此计算加速倍率。后台 `/api/status` 的三次查询耗时为 4.2、3.4、2.5 秒。云端兼容层的同步远程 SQLite 查询会等待网络结果，这可能影响主线程处理流式事件；尚未进行隔离对照，不能将全部低 TPS 归因于网关或 Cloudflare。
 
+同日补测其余六个可用模型，dev01/dev03 各自固定会话，low 推理、128 个整数输出：36 次矩阵请求加 6 次顺序对照，共 42 次。12 次 `fast` 均返回 HTTP 400；`priority` 请求完成时仍一律回传 `default`，没有确认官方 Fast 档位。29 次完整样本均无缓存、无排队，且回传模型与请求模型一致。一次 6.1 Sol Standard 顺序对照返回 `server_is_overloaded`，该失败保留在报告中，之后单独补测成功。
+
+| 模型 | Standard 可见 token/s | 请求 priority 后的可见 token/s | 实际回传档位 |
+| --- | --- | --- | --- |
+| gpt-6.1-sol | 23.4–26.1 | 51.6–53.5 | default |
+| gpt-6-sol | 30.2–57.0 | 87.4–88.8 | default |
+| gpt-6-luna | 56.9–58.9 | 85.5–86.7 | default |
+| gpt-5.6-sol | 40.8–41.5 | 85.9–88.4 | default |
+| gpt-5.6-terra | 43.0–44.6 | 42.6–54.7 | default |
+| gpt-5.6-luna | 59.7–66.4 | 58.2–88.5 | default |
+
+`priority` 的实际速度效果与“官方 Fast 档位是否确认”应分别表述：5.6 Sol 在反向顺序对照中 priority 为 86.5、随后 Standard 为 41.5 token/s；6.1 Sol 的后续 Standard 为 23.4，而 priority 样本约 52；6 Sol 后续 Standard 为 57，而 priority 约 88。这为部分模型的 priority 提速提供了小样本线索，但没有稳定倍率、真实 Agent 工作负载或额度消耗倍率的验证。不能仅凭回传 default 断言参数完全没有速度影响，也不能把更快的输出标成官方 Fast 已生效。5.6 Terra/Luna 的样本未显示稳定收益。本次仅调查，不修改网关默认档位。
+
+完整矩阵、顺序对照和汇总保存在运行机器 `reports/cloud-fast-model-matrix-20261013.json`、`reports/cloud-fast-order-control-20261013.json`、`reports/cloud-fast-default-recheck-20261013.json`、`reports/cloud-fast-model-summary-20261013.json`；不含接入密钥或原始业务对话。
+
 2026-10-12 Sci-Pegasus 真实 Agent 场景：首次两轮请求成功、缓存均为 0；用户回答澄清问题后的下一轮发生 `stream_incomplete`。同账号、同 session 的受控复测收到 `response.completed`，输入 13,142 token，其中 12,928 为缓存 token（98.4%）。这说明该接入能观察到实际缓存命中，不应把较早的零命中样本解释为缓存被禁用。复测只检查模型流，不执行返回的工具。
 
 同日进一步单独测试内容块 `prompt_cache_breakpoint`（未发送 `prompt_cache_options`），上游返回 `400 invalid_parameter`，`error.param=prompt_cache_breakpoint`，提示当前模型不支持。通用 OpenAI API 文档描述 GPT-5.6 及以后支持显式与隐式缓存，但此处的 Pro 授权路线对当前 `gpt-6-astra` 实测拒绝两种显式配置字段；当前仅自动缓存已确认可用。首次两轮正常调用为零命中，98.4% 来自随后受控重放，不能混称为正常多轮命中率。
