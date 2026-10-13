@@ -8,6 +8,10 @@
 
 2026-10-10 实测：dev01/dev03 的 `gpt-6-astra` 上，`fast` 返回 400，`priority` 完成但回传 `default`，没有确认启用 Fast。约 4,600 token 的自动缓存试验（完全重复、改尾部、改前缀及换账号，共 8 次）回传 `cached_tokens=0`；只能说明本轮未观察到命中。参数覆盖还返回 `prompt_cache_options is not supported on this model`。报告保存实际请求和回传信息，后续上游能力变化时可重测，不把通用 API 功能当作套餐路线已开放的保证。
 
+2026-10-13 在 Cloudflare 正式部署复测 dev01 的 `gpt-6-astra`，固定账号与会话、65 token 短输入、low 推理、128 个整数输出。Standard 请求回传 `default`，可见输出约 47.5 token/s；`fast` 返回 HTTP 400 / `Unsupported service_tier: fast`；`priority` 完成但仍回传 `default`，约 46.8 token/s。两个完成样本均无排队、无缓存、259 输出 token、0 推理 token。本轮仍未确认 Fast 生效，不能把 `priority` 请求成功视为开启 Fast。调查报告保存在运行机器的 `reports/cloud-fast-research-20261013.json`；报告不包含访问密钥或原始业务对话。
+
+同日云端三次指纹样本约 21～22 可见 token/s，均无排队；它们与上述短输出控样的任务内容和推理设置不同，不能据此计算加速倍率。后台 `/api/status` 的三次查询耗时为 4.2、3.4、2.5 秒。云端兼容层的同步远程 SQLite 查询会等待网络结果，这可能影响主线程处理流式事件；尚未进行隔离对照，不能将全部低 TPS 归因于网关或 Cloudflare。
+
 2026-10-12 Sci-Pegasus 真实 Agent 场景：首次两轮请求成功、缓存均为 0；用户回答澄清问题后的下一轮发生 `stream_incomplete`。同账号、同 session 的受控复测收到 `response.completed`，输入 13,142 token，其中 12,928 为缓存 token（98.4%）。这说明该接入能观察到实际缓存命中，不应把较早的零命中样本解释为缓存被禁用。复测只检查模型流，不执行返回的工具。
 
 同日进一步单独测试内容块 `prompt_cache_breakpoint`（未发送 `prompt_cache_options`），上游返回 `400 invalid_parameter`，`error.param=prompt_cache_breakpoint`，提示当前模型不支持。通用 OpenAI API 文档描述 GPT-5.6 及以后支持显式与隐式缓存，但此处的 Pro 授权路线对当前 `gpt-6-astra` 实测拒绝两种显式配置字段；当前仅自动缓存已确认可用。首次两轮正常调用为零命中，98.4% 来自随后受控重放，不能混称为正常多轮命中率。
@@ -52,4 +56,3 @@ npm run benchmark -- cache --run --model gpt-6-astra
 
 
 2026-10-12 的较早真实单 Agent 研究中，同账号、相同初始输入和工具定义，未发送上游 `session-id` 的 HTTP 17 次请求整体 token 命中率为 0.79%；持久 WebSocket 16 次为 89.23%，15 次续接全部命中。省略缓存键与填固定键的 WebSocket 小对照均约 94.9%。这些旧 HTTP 数据未包含本次补齐的会话请求头，不代表修正后的 HTTP 命中率。依据：[连接内续接及恢复](https://developers.openai.com/api/docs/guides/websocket-mode)、[套餐接入限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)。
-
