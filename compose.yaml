@@ -6,7 +6,7 @@ services:
       context: .
       args:
         CODEX_VERSION: "0.159.2"
-    image: pro-account-console:0.14.0
+    image: pro-account-console:0.14.1
     network_mode: host
     init: true
     restart: unless-stopped

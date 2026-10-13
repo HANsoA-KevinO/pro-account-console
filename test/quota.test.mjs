@@ -156,9 +156,25 @@ test("admin sync endpoints require cookie+CSRF and expose no private bindings th
   assert.ok(!JSON.stringify(status).includes("binding"));
 });
 
+test("quota RPC errors identify TLS, connection and disabled-device failures without exposing upstream details",async t=>{
+  const cases=[
+    ["failed to request device code: error sending request for url (https://auth.openai.com/api/accounts/deviceauth/usercode?secret=private-diagnostic)","quota_connection_failed"],
+    ["invalid peer certificate: UnknownIssuer; Bearer private-diagnostic","quota_tls_failed"],
+    ["device code authentication is disabled; private-diagnostic","quota_device_auth_disabled"],
+  ];
+  for(const [message,code]of cases){
+    const child=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.kill=()=>{};
+    child.stdin.on("data",data=>{const req=JSON.parse(String(data));if(req.id!==undefined)child.stdout.write(JSON.stringify(req.method==="account/login/start"?{id:req.id,error:{code:-32603,message}}:{id:req.id,result:{}})+"\n");});
+    const client=new CodexQuotaClient(await directory(t),{binary:"fake-codex",spawnImpl:()=>child});t.after(()=>client.close());await client.start();
+    await assert.rejects(client.request("account/login/start",{type:"chatgptDeviceCode"}),error=>error.code===code&&!error.message.includes("private-diagnostic")&&!error.message.includes("auth.openai.com"));
+  }
+});
+
 
 test("remote quota sign-in uses device codes, deduplicates requests and still verifies account identity",async t=>{
-  const f=await fixture(t),result=await f.quota.startLogin("account-default",{deviceCode:true});
+  const f=await fixture(t);await f.store.saveQuotaState("account-default",{lastError:{code:"quota_connection_failed",message:"previous error"}});
+  const result=await f.quota.startLogin("account-default",{deviceCode:true});
+  assert.equal(f.quota.status("account-default").lastError,null);
   assert.equal(result.mode,"device_code");assert.equal(result.authorizationUrl,"https://auth.openai.com/codex/device");assert.equal(result.userCode,"ABCD-1234");
   assert.deepEqual(await f.quota.startLogin("account-default",{deviceCode:true}),result);
   assert.equal(f.calls.filter(x=>x.method==="account/login/start").length,1);assert.equal(f.calls.find(x=>x.method==="account/login/start").params.type,"chatgptDeviceCode");
@@ -166,4 +182,13 @@ test("remote quota sign-in uses device codes, deduplicates requests and still ve
   await f.quota.notification("account-default",{method:"account/login/completed",params:{loginId:"login-account-default",success:true}});
   assert.equal(f.quota.login,null);assert.equal(f.quota.status("account-default").connected,true);
   assert.ok(!JSON.stringify(f.store.auditLog()).includes(result.userCode));
+});
+
+
+test("a persistence failure after obtaining a device code cancels that pending login",async t=>{
+  const f=await fixture(t),save=f.store.saveQuotaState.bind(f.store);let failOnce=true;
+  f.store.saveQuotaState=async(...args)=>{if(failOnce){failOnce=false;throw new Error("private-storage-detail");}return save(...args);};
+  await assert.rejects(f.quota.startLogin("account-default",{deviceCode:true}),error=>error.code==="quota_login_failed"&&!error.message.includes("private-storage-detail"));
+  assert.equal(f.quota.login,null);assert.equal(f.calls.filter(x=>x.method==="account/login/cancel").length,1);
+  assert.equal((await f.quota.startLogin("account-default",{deviceCode:true})).mode,"device_code");
 });

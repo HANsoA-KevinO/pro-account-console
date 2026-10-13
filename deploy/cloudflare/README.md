@@ -101,10 +101,16 @@ npm run cloudflare:authorize -- --instance YOUR_INSTANCE_ID
 
 跟踪的 `wrangler.jsonc` 是通用模板，实际账户、域名和公钥写入本机 `.data/cloudflare/wrangler.jsonc`。
 默认容器为 `basic`，最多一个实例，使用 `us` jurisdiction 与 `WNAM` 区域约束运行于美国西部。两个 Durable Object owner 都使用美国子命名空间，生产主库和容器 owner 位于美国。Worker 的公网入口仍全球分发，见 [容器区域约束](https://developers.cloudflare.com/containers/concepts/placement/) 与 [Durable Objects 数据位置](https://developers.cloudflare.com/durable-objects/reference/data-location/)。
-运行镜像使用 Node.js 24、Codex CLI 0.159.2，网关内部监听 18787。
+运行镜像使用 Node.js 24、Codex CLI 0.159.2，网关内部监听 18787。镜像显式安装 `ca-certificates`：独立 Codex CLI 的 HTTPS 请求依赖系统 CA，不能用 Node 自带的根证书替代。
 云端启动入口为 `lib/cloudflare-start.mjs`，原有本机和服务器启动方式保留。
 
 使用自己的域名时，先为该 Worker 添加 Custom Domain，再按实际 HTTPS origin 重新执行 `prepare` 并部署，重启网关容器使新的访问 origin 生效。账号数据保留在相同命名空间中；管理员会话按访问 origin 重新登录。
 更改 Worker 名称或创建新账户下的部署会产生独立资源，原命名空间的数据不会自动迁移。
 
 持久化数据库支持 Cloudflare 的 SQLite 恢复机制，见 [SQLite Durable Objects 文档](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)。删除 Durable Object 命名空间会删除其数据。保留本机专用 SSH 密钥和管理员凭据；需要轮换时更新 Worker Secrets 与对应配置。
+
+## 额度登录连接错误
+
+`quota_connection_failed` 表示 Codex 没能建立到 OpenAI 的 HTTPS 请求，`quota_tls_failed` 表示证书验证失败。容器需存在非空 `/etc/ssl/certs/ca-certificates.crt`；本项目 0.14.1 起的镜像已显式安装系统证书。模型目录由 Node 请求，Node 自带可信根，所以能读模型目录并不能证明 Codex 的系统证书配置正常。
+
+`quota_device_auth_disabled` 提示在 ChatGPT 安全设置或工作区权限中启用设备码登录。真实账号仍需完成官方页面确认后才能读取额度；网关不会通过放宽 TLS 验证来处理连接问题。
