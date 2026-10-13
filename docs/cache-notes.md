@@ -27,6 +27,8 @@
 
 完整矩阵、顺序对照和汇总保存在运行机器 `reports/cloud-fast-model-matrix-20261013.json`、`reports/cloud-fast-order-control-20261013.json`、`reports/cloud-fast-default-recheck-20261013.json`、`reports/cloud-fast-model-summary-20261013.json`；不含接入密钥或原始业务对话。
 
+随后对 Astra 补做 priority / Standard / Standard / priority 的四次交替顺序对照，复用原来的账号、会话、输入和 low 推理。四次均完整完成、无排队、无缓存，回传模型均为 `gpt-6-astra`；priority 为 66.3、65.3 token/s，Standard 为 31.5、34.2 token/s，均值之比约 2.0。Astra 上最初的 47.5 / 46.8 两个样本不足以否定后续的提速线索；本轮观察到了明显收益，但实际档位仍全部回传 default，仍不能标为官方 Fast 已确认，也不能保证真实 Agent 或其它时段同样提速。报告为运行机器 `reports/cloud-fast-astra-order-control-20261013.json`，没有修改生产默认档位。
+
 2026-10-12 Sci-Pegasus 真实 Agent 场景：首次两轮请求成功、缓存均为 0；用户回答澄清问题后的下一轮发生 `stream_incomplete`。同账号、同 session 的受控复测收到 `response.completed`，输入 13,142 token，其中 12,928 为缓存 token（98.4%）。这说明该接入能观察到实际缓存命中，不应把较早的零命中样本解释为缓存被禁用。复测只检查模型流，不执行返回的工具。
 
 同日进一步单独测试内容块 `prompt_cache_breakpoint`（未发送 `prompt_cache_options`），上游返回 `400 invalid_parameter`，`error.param=prompt_cache_breakpoint`，提示当前模型不支持。通用 OpenAI API 文档描述 GPT-5.6 及以后支持显式与隐式缓存，但此处的 Pro 授权路线对当前 `gpt-6-astra` 实测拒绝两种显式配置字段；当前仅自动缓存已确认可用。首次两轮正常调用为零命中，98.4% 来自随后受控重放，不能混称为正常多轮命中率。
