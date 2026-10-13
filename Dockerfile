@@ -4,8 +4,8 @@ ARG CODEX_VERSION=0.159.2
 RUN npm install --global @openai/codex@${CODEX_VERSION} && npm cache clean --force
 
 # The Codex quota reader requires system CA certificates for HTTPS.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+RUN apt-get -o Acquire::Retries=3 update \
+    && apt-get -o Acquire::Retries=3 install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 

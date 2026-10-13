@@ -4,8 +4,8 @@ RUN npm install --global @openai/codex@${CODEX_VERSION} && npm cache clean --for
 
 # Codex uses the operating system's trust store; Node's bundled CA roots are
 # insufficient for the separate Rust CLI's HTTPS requests.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+RUN apt-get -o Acquire::Retries=3 update \
+    && apt-get -o Acquire::Retries=3 install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
